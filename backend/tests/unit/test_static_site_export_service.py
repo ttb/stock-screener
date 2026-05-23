@@ -16,10 +16,13 @@ from app.database import Base
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 from app.models.stock import StockPrice
 from app.services.static_site_export_service import (
+    STATIC_DEFAULT_SCAN_FILTERS_BY_MARKET,
+    STATIC_DEFAULT_SCAN_FILTERS_FALLBACK,
     STATIC_MARKET_METADATA_FILENAME,
     STATIC_SITE_SCHEMA_VERSION,
     StaticSiteSectionUnavailableError,
     StaticSiteExportService,
+    resolve_static_default_filters,
 )
 
 
@@ -486,6 +489,7 @@ def test_export_scan_bundle_chunks_large_result_sets(service_and_session_factory
             output_dir=tmp_path,
             generated_at="2026-03-31T22:00:00Z",
             run=run,
+            market="US",
         )
 
     first_chunk = json.loads((tmp_path / "scan" / "chunks" / "chunk-0001.json").read_text(encoding="utf-8"))
@@ -500,6 +504,138 @@ def test_export_scan_bundle_chunks_large_result_sets(service_and_session_factory
     assert [chunk["count"] for chunk in manifest["chunks"]] == [3, 2]
     assert [row["symbol"] for row in first_chunk["rows"]] == ["SYM0", "SYM1", "SYM2"]
     assert [row["symbol"] for row in second_chunk["rows"]] == ["SYM3", "SYM4"]
+
+
+def test_resolve_static_default_filters_returns_per_market_threshold():
+    assert resolve_static_default_filters("US") == {"minVolume": 100_000_000}
+    assert resolve_static_default_filters("sg") == {"minVolume": 1_300_000}
+    assert resolve_static_default_filters("HK") == STATIC_DEFAULT_SCAN_FILTERS_BY_MARKET["HK"]
+    assert resolve_static_default_filters("ZZ") == STATIC_DEFAULT_SCAN_FILTERS_FALLBACK
+    assert resolve_static_default_filters(None) == STATIC_DEFAULT_SCAN_FILTERS_FALLBACK
+
+
+def test_export_scan_bundle_uses_sg_threshold_for_sg_market(
+    service_and_session_factory,
+    monkeypatch,
+    tmp_path,
+):
+    service, session_factory = service_and_session_factory
+    _insert_runs(
+        session_factory,
+        FeatureRun(
+            id=21,
+            as_of_date=date(2026, 3, 31),
+            run_type="daily_snapshot",
+            status="published",
+            published_at=datetime(2026, 3, 31, 21, 30, 0),
+        ),
+        pointer_run_id=21,
+    )
+
+    rows = [
+        SimpleNamespace(index=0, volume=50_000_000),    # SG large-cap turnover
+        SimpleNamespace(index=1, volume=5_000_000),     # SG mid-cap turnover
+        SimpleNamespace(index=2, volume=1_500_000),     # just above SG threshold
+        SimpleNamespace(index=3, volume=500_000),       # below SG threshold
+        SimpleNamespace(index=4, volume=None),
+    ]
+    monkeypatch.setattr(
+        export_module.SqlFeatureStoreRepository,
+        "query_all_as_scan_results",
+        lambda self, *_args, **_kwargs: rows,
+    )
+    monkeypatch.setattr(
+        export_module.SqlFeatureStoreRepository,
+        "get_filter_options_for_run",
+        lambda self, _run_id: SimpleNamespace(
+            ibd_industries=(),
+            gics_sectors=(),
+            ratings=("Strong Buy",),
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_serialize_scan_row",
+        lambda row: {
+            "symbol": f"SG{row.index}",
+            "composite_score": 100 - row.index,
+            "volume": row.volume,
+        },
+    )
+
+    with session_factory() as db:
+        run = db.get(FeatureRun, 21)
+        manifest, _serialized = service._export_scan_bundle(  # noqa: SLF001
+            db=db,
+            output_dir=tmp_path,
+            generated_at="2026-03-31T22:00:00Z",
+            run=run,
+            market="SG",
+        )
+
+    assert manifest["default_filters"] == {"minVolume": 1_300_000}
+    assert manifest["default_filtered_rows_total"] == 3
+    assert [row["symbol"] for row in manifest["initial_rows"]] == ["SG0", "SG1", "SG2"]
+
+
+def test_export_scan_bundle_unknown_market_disables_volume_filter(
+    service_and_session_factory,
+    monkeypatch,
+    tmp_path,
+):
+    service, session_factory = service_and_session_factory
+    _insert_runs(
+        session_factory,
+        FeatureRun(
+            id=22,
+            as_of_date=date(2026, 3, 31),
+            run_type="daily_snapshot",
+            status="published",
+            published_at=datetime(2026, 3, 31, 21, 30, 0),
+        ),
+        pointer_run_id=22,
+    )
+
+    rows = [
+        SimpleNamespace(index=0, volume=10),
+        SimpleNamespace(index=1, volume=None),
+    ]
+    monkeypatch.setattr(
+        export_module.SqlFeatureStoreRepository,
+        "query_all_as_scan_results",
+        lambda self, *_args, **_kwargs: rows,
+    )
+    monkeypatch.setattr(
+        export_module.SqlFeatureStoreRepository,
+        "get_filter_options_for_run",
+        lambda self, _run_id: SimpleNamespace(
+            ibd_industries=(),
+            gics_sectors=(),
+            ratings=(),
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_serialize_scan_row",
+        lambda row: {
+            "symbol": f"X{row.index}",
+            "composite_score": 100 - row.index,
+            "volume": row.volume,
+        },
+    )
+
+    with session_factory() as db:
+        run = db.get(FeatureRun, 22)
+        manifest, _serialized = service._export_scan_bundle(  # noqa: SLF001
+            db=db,
+            output_dir=tmp_path,
+            generated_at="2026-03-31T22:00:00Z",
+            run=run,
+            market=None,
+        )
+
+    assert manifest["default_filters"] == {"minVolume": None}
+    assert manifest["default_filtered_rows_total"] == manifest["rows_total"] == 2
 
 
 def test_export_scan_bundle_prioritizes_full_rows_before_ipo_weighted_and_listing_only(
@@ -559,6 +695,7 @@ def test_export_scan_bundle_prioritizes_full_rows_before_ipo_weighted_and_listin
             output_dir=tmp_path,
             generated_at="2026-03-31T22:00:00Z",
             run=run,
+            market="US",
         )
 
     assert [row["symbol"] for row in manifest["initial_rows"]] == ["FULL80", "FULL70", "IPO95"]

@@ -51,7 +51,38 @@ STATIC_CHART_LIMIT = 200
 STATIC_CHART_PERIOD = "6mo"
 STATIC_CHART_PERIOD_DAYS = 180
 STATIC_CHART_LOOKUP_BATCH_SIZE = 250
-STATIC_DEFAULT_SCAN_FILTERS = {"minVolume": 100_000_000}
+# Default minVolume thresholds are expressed in local-currency daily dollar
+# volume (avg_volume × current_price), not share count — the ``volume`` field
+# on each scan row is sourced from ``avg_dollar_volume`` in the local listing
+# currency. The US value preserves the historical USD 100M floor; non-US
+# values are sized to roughly USD 1M-equivalent so the full local universe is
+# visible by default, with users free to tighten via the filter panel.
+STATIC_DEFAULT_SCAN_FILTERS_BY_MARKET: dict[str, dict[str, int | None]] = {
+    "US": {"minVolume": 100_000_000},      # USD 100M
+    "HK": {"minVolume":   8_000_000},      # ~USD 1M @ HKD 7.8
+    "IN": {"minVolume":  80_000_000},      # ~USD 1M @ INR 83
+    "JP": {"minVolume": 150_000_000},      # ~USD 1M @ JPY 150
+    "KR": {"minVolume": 1_000_000_000},    # ~USD 750k @ KRW 1380
+    "TW": {"minVolume":  30_000_000},      # ~USD 1M @ TWD 32
+    "CN": {"minVolume":   7_000_000},      # ~USD 1M @ CNY 7.2
+    "CA": {"minVolume":   1_400_000},      # ~USD 1M @ CAD 1.36
+    "DE": {"minVolume":     900_000},      # ~USD 1M @ EUR 0.92
+    "SG": {"minVolume":   1_300_000},      # ~USD 1M @ SGD 1.35
+}
+STATIC_DEFAULT_SCAN_FILTERS_FALLBACK: dict[str, int | None] = {"minVolume": None}
+
+
+def resolve_static_default_filters(market: str | None) -> dict[str, int | None]:
+    """Return the per-market default scan filters, or the no-op fallback."""
+
+    code = (market or "").upper()
+    return dict(
+        STATIC_DEFAULT_SCAN_FILTERS_BY_MARKET.get(
+            code, STATIC_DEFAULT_SCAN_FILTERS_FALLBACK
+        )
+    )
+
+
 STATIC_CHART_PRESET_TOP_N = 200
 STATIC_CHART_TOP_N_GROUPS = 50
 STATIC_GROUP_DETAIL_HISTORY_DAYS = 100
@@ -327,6 +358,7 @@ class StaticSiteExportService:
             rows=scan_rows,
             filter_options=filter_options,
             path_prefix=path_prefix,
+            market=market,
         )
         groups_payload = self._build_optional_section_payload(
             section=f"{market} groups",
@@ -629,6 +661,7 @@ class StaticSiteExportService:
         rows: list[Any] | None = None,
         filter_options: Any | None = None,
         path_prefix: Path | None = None,
+        market: str | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if rows is None or filter_options is None:
             repo = SqlFeatureStoreRepository(db)
@@ -648,7 +681,10 @@ class StaticSiteExportService:
         serialized_rows = [self._serialize_scan_row(row) for row in rows]
         self._annotate_percentile_ranks(serialized_rows)
         serialized_rows = self._sort_static_scan_rows(serialized_rows)
-        default_filtered_rows = self._apply_static_default_filters(serialized_rows)
+        resolved_default_filters = resolve_static_default_filters(market)
+        default_filtered_rows = self._apply_static_default_filters(
+            serialized_rows, default_filters=resolved_default_filters
+        )
         chunk_refs: list[dict[str, Any]] = []
         for index in range(0, len(serialized_rows), SCAN_CHUNK_SIZE):
             chunk_rows = serialized_rows[index:index + SCAN_CHUNK_SIZE]
@@ -679,7 +715,7 @@ class StaticSiteExportService:
             "default_page_size": 50,
             "chunk_size": SCAN_CHUNK_SIZE,
             "rows_total": len(serialized_rows),
-            "default_filters": dict(STATIC_DEFAULT_SCAN_FILTERS),
+            "default_filters": dict(resolved_default_filters),
             "default_filtered_rows_total": len(default_filtered_rows),
             "filter_options": FilterOptionsResponse(
                 ibd_industries=list(filter_options.ibd_industries),
@@ -1918,8 +1954,13 @@ class StaticSiteExportService:
                 pos = end + 1
 
     @staticmethod
-    def _apply_static_default_filters(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        min_volume = STATIC_DEFAULT_SCAN_FILTERS.get("minVolume")
+    def _apply_static_default_filters(
+        rows: list[dict[str, Any]],
+        *,
+        default_filters: dict[str, int | None] | None = None,
+    ) -> list[dict[str, Any]]:
+        filters = default_filters or STATIC_DEFAULT_SCAN_FILTERS_FALLBACK
+        min_volume = filters.get("minVolume")
         if min_volume is None:
             return list(rows)
         return [
