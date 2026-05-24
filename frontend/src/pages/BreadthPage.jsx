@@ -93,6 +93,7 @@ const MARKET_LABELS = {
   TW: 'Taiwan',
   CN: 'China A-shares',
   SG: 'Singapore',
+  MY: 'Malaysia',
   CA: 'Canada',
 };
 
@@ -105,6 +106,7 @@ const MARKET_LIVE_BENCHMARK_SYMBOLS = {
   TW: '0050.TW',
   CN: '000300.SS',
   SG: 'ES3.SI',
+  MY: '^KLSE',
   CA: 'XIU.TO',
 };
 
@@ -119,7 +121,7 @@ function BreadthPage() {
     uiSnapshots,
     primaryMarket = 'US',
     enabledMarkets = ['US'],
-    supportedMarkets = ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'SG', 'MY', 'CA', 'DE'],
+    supportedMarkets = ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA', 'DE', 'SG', 'MY'],
   } = useRuntime();
   const queryClient = useQueryClient();
   const [selectedTab, setSelectedTab] = useState(0);
