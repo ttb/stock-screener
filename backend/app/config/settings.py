@@ -229,17 +229,26 @@ class Settings(BaseSettings):
     # disable the floor and always trust the live SGX feed.
     sg_live_min_universe_size: int = 200
     sg_universe_allow_insecure_fallback: bool = False
-    # Bursa Malaysia (KLSE / Main + ACE markets). Defaults blank to force the
-    # bundled CSV fallback at launch; operators with confirmed access to a
-    # Bursa universe feed can opt in via MY_UNIVERSE_SOURCE_URL.
+    # Bursa Malaysia (KLSE / Main + ACE markets). When MY_UNIVERSE_SOURCE_URL
+    # points at a Bursa equities listing JSON endpoint, the fetcher walks the
+    # paginated response and emits ``source_name == 'bursa_official'``. When
+    # blank, or when the live response is unreachable / below the size floor,
+    # the bundled CSV fallback at ``my_universe_fallback_csv_path`` is used
+    # and the snapshot emits ``source_name == 'my_manual_csv'`` instead.
     my_universe_source_url: str = ""
     my_universe_fallback_csv_path: str = str(
         _PROJECT_ROOT / "data" / "my_klse_constituents.csv"
     )
     # Bursa hosts ~900 issuers across Main + ACE markets. The bundled fallback
-    # ships the FBM KLCI 30 plus a handful of FBM Top 100 names; setting the
-    # floor at 25 catches an empty CSV without rejecting the curated seed.
-    my_live_min_universe_size: int = 25
+    # ships the FBM KLCI 30 plus a handful of FBM Top 100 names (~47 names);
+    # setting the live floor at 200 catches a broken Bursa response without
+    # rejecting routine listing churn. Set to 0 to disable the floor and
+    # always trust the live Bursa feed.
+    my_live_min_universe_size: int = 200
+    # Bursa API pages typically cap at ~20 rows/page; ~900 issuers fit well
+    # under a 100-page ceiling. The cap exists so a runaway ``totalPages``
+    # value in a malformed response cannot trigger an unbounded fetch loop.
+    my_universe_max_pages: int = 100
     ibd_industry_csv_path: str = str(_PROJECT_ROOT / "data" / "IBD_industry_group.csv")
 
     # Per-market rate budget overrides. Each value is in requests-per-second

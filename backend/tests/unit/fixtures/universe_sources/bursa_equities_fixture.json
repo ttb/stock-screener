@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "code": "200",
+    "message": "success",
+    "totalPages": 1,
+    "totalItems": 11,
+    "processedTime": 1779000000000
+  },
+  "data": [
+    {
+      "code": "1155",
+      "name": "MALAYAN BANKING BHD",
+      "board": "MAIN MARKET",
+      "sector": "Financial Services",
+      "sub_sector": "Banks",
+      "isin": "MYL1155OO000"
+    },
+    {
+      "stock_code": "1295",
+      "company_name": "PUBLIC BANK BHD",
+      "market": "MAIN-MKT",
+      "sector": "Financial Services",
+      "sub_sector": "Banks"
+    },
+    {
+      "code": "5347",
+      "name": "TENAGA NASIONAL BHD",
+      "board": "MAIN MARKET",
+      "sector": "Utilities",
+      "sub_sector": "Power"
+    },
+    {
+      "code": "0166",
+      "name": "INARI AMERTRON BHD",
+      "board": "ACE MARKET",
+      "sector": "Technology",
+      "sub_sector": "Semiconductors"
+    },
+    {
+      "code": "5212",
+      "name": "PAVILION REIT",
+      "board": "MAIN MARKET",
+      "sector": "Real Estate Investment Trusts",
+      "sub_sector": "REITs"
+    },
+    {
+      "code": "5283",
+      "name": "ECO WORLD INTERNATIONAL BUSINESS TRUST",
+      "board": "MAIN MARKET",
+      "sector": "Property",
+      "sub_sector": "Trusts"
+    },
+    {
+      "code": "0820",
+      "name": "MYETF DOW JONES U.S. TITANS 50",
+      "board": "MAIN MARKET",
+      "sector": "ETF",
+      "sub_sector": "ETF"
+    },
+    {
+      "code": "5279",
+      "name": "PETRON MALAYSIA-WA",
+      "board": "MAIN MARKET",
+      "sector": "Energy",
+      "sub_sector": "Oil & Gas"
+    },
+    {
+      "code": "BAD!CODE",
+      "name": "Invalid Ticker Shape",
+      "board": "MAIN MARKET"
+    },
+    {
+      "code": "9999",
+      "name": "Leap Listing",
+      "board": "LEAP MARKET",
+      "sector": "Industrials",
+      "sub_sector": "Diversified"
+    },
+    {
+      "code": "1155",
+      "name": "DUPLICATE OF MAYBANK",
+      "board": "MAIN MARKET",
+      "sector": "Financial Services"
+    }
+  ]
+}

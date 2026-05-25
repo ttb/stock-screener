@@ -1,4 +1,14 @@
-"""Fetch and parse official exchange universe snapshots for HK, IN, JP, KR, TW, CN, CA, DE, SG, and MY."""
+"""Fetch and parse official exchange universe snapshots for HK, IN, JP, KR, TW, CN, CA, DE, SG, and MY.
+
+MY (Bursa Malaysia) supports two paths: a live JSON fetch driven by
+``MY_UNIVERSE_SOURCE_URL`` (walks the paginated Bursa equities listing
+endpoint and emits ``source_name == 'bursa_official'``), and a bundled CSV
+fallback that ships the FBM KLCI 30 plus a handful of FBM Top 100 names.
+When the live URL is blank, unreachable, returns no rows, or yields fewer
+than ``settings.my_live_min_universe_size`` rows after filtering, the
+fetcher falls back to the seed CSV and emits ``source_name == 'my_manual_csv'``
+so downstream coverage gates can see the snapshot is degraded.
+"""
 
 from __future__ import annotations
 
@@ -48,6 +58,20 @@ _MY_SOURCE_NAME = "bursa_official"
 # Source identifier emitted when the live Bursa Malaysia feed is unconfigured
 # or unreachable and the bundled MY seed CSV is used instead.
 _MY_FALLBACK_SOURCE_NAME = "my_manual_csv"
+# Bursa issuer codes are exactly four numeric digits; the live parser drops
+# rows whose ticker token cannot be canonicalized to ``<NNNN>.KL``.
+_MY_LIVE_TICKER_RE = re.compile(r"^[0-9]{4}$")
+# Bursa labels boards in several formats: ``MAIN MARKET``, ``MAIN-MKT``,
+# ``MAIN_MKT``, sometimes bare ``MAIN``. ACE follows the same shape. LEAP
+# Market (private-investor venue) and structured-product boards are excluded.
+_MY_EQUITY_BOARD_TOKENS = frozenset({"MAIN", "ACE"})
+# Word-boundary tokens that disqualify a Bursa row from the supported
+# universe (REITs, business trusts, ETFs, structured warrants). Tokens are
+# matched after splitting the haystack on non-alphanumerics so substring
+# matches inside ordinary issuer names cannot trigger exclusion.
+_MY_EXCLUDED_TOKENS = frozenset(
+    {"reit", "reits", "etf", "etfs", "trust", "trusts", "warrant", "warrants"}
+)
 # SGX issuer codes follow the same ``[A-Z0-9]{1,8}`` shape the SG ingestion
 # adapter enforces — reject Yahoo-incompatible codes from the live response
 # before they reach downstream consumers.
@@ -1443,58 +1467,395 @@ class OfficialMarketUniverseSourceService:
         )
 
     def fetch_my_snapshot(self) -> OfficialMarketUniverseSnapshot:
-        """Fetch the MY equity universe.
+        """Fetch the MY equity universe from the Bursa Malaysia JSON API.
 
-        At launch Bursa Malaysia is bundled-CSV-only: there is no committed
-        live source URL. Operators with confirmed access to a Bursa universe
-        feed can set ``MY_UNIVERSE_SOURCE_URL`` to opt in — until then the
-        fallback CSV at ``settings.my_universe_fallback_csv_path`` is the
-        authoritative source. The snapshot emits ``source_name == 'my_manual_csv'``
-        and ``fetch_mode == 'csv_fallback'`` so downstream coverage gates can
-        see that the snapshot is seeded rather than live.
+        Source: ``settings.my_universe_source_url`` should point at the
+        Bursa Malaysia equities-listing JSON endpoint (the one that powers
+        the public ``equities_prices`` table). The fetcher walks the
+        paginated response, normalizes each 4-digit issuer code to
+        ``<NNNN>.KL``, and filters to Main Market + ACE Market common
+        equities (REITs, business trusts, ETFs, and structured warrants
+        are dropped).
+
+        Fallback path: when the live URL is blank, unreachable, fails to
+        parse, returns no rows, or yields fewer than
+        ``settings.my_live_min_universe_size`` rows after filtering, the
+        fetcher falls back to the bundled seed CSV at
+        ``settings.my_universe_fallback_csv_path``. The snapshot publishes
+        with ``source_name == 'my_manual_csv'`` and
+        ``fetch_mode == 'csv_fallback'`` so downstream coverage gates can
+        tell live from fallback.
         """
-        if settings.my_universe_source_url:
-            # Live MY ingestion is not yet implemented; raise so operators
-            # who set the env var know it's a no-op rather than silently
-            # falling through to the seed CSV.
-            raise NotImplementedError(
-                "Live Bursa Malaysia universe ingestion is not implemented. "
-                "Blank MY_UNIVERSE_SOURCE_URL to use the bundled CSV fallback."
-            )
+        fetch_mode = "live_http"
+        fetch_errors: dict[str, str] = {}
+        fetched_at: str | None = None
+        last_modified: str | None = None
+        tls_verification_disabled = False
+        page_count = 0
+        rows: list[dict[str, Any]] = []
 
-        logger.info(
-            "MY universe source URL is blank; using bundled fallback CSV at %s",
-            settings.my_universe_fallback_csv_path,
-        )
-        rows = self._load_my_csv_fallback()
+        if settings.my_universe_source_url:
+            try:
+                live_meta = self._fetch_my_live()
+            except (requests.exceptions.RequestException, ValueError) as exc:
+                live_error = str(exc)
+                print(
+                    f"[my] Live universe fetch failed: {live_error!s}. "
+                    f"Falling back to bundled CSV at {settings.my_universe_fallback_csv_path}.",
+                    flush=True,
+                )
+                logger.warning(
+                    "Live MY universe fetch failed (%s); falling back to bundled CSV at %s",
+                    live_error,
+                    settings.my_universe_fallback_csv_path,
+                )
+                fetch_errors["live_http"] = live_error
+                rows = self._load_my_csv_fallback()
+                fetch_mode = "csv_fallback"
+                fetched_at = datetime.now(UTC).isoformat()
+            else:
+                rows = live_meta["rows"]
+                fetched_at = live_meta.get("fetched_at")
+                last_modified = live_meta.get("http_last_modified")
+                tls_verification_disabled = bool(live_meta.get("tls_verification_disabled"))
+                page_count = int(live_meta.get("page_count") or 0)
+                print(
+                    f"[my] Live universe fetch succeeded: {len(rows)} rows "
+                    f"from {settings.my_universe_source_url}",
+                    flush=True,
+                )
+        else:
+            logger.info(
+                "MY universe source URL is blank; using bundled fallback CSV at %s",
+                settings.my_universe_fallback_csv_path,
+            )
+            rows = self._load_my_csv_fallback()
+            fetch_mode = "csv_fallback"
+            fetched_at = datetime.now(UTC).isoformat()
+
         if not rows:
             raise ValueError(
-                "MY official universe fetch returned no rows (fallback CSV empty)"
+                "MY official universe fetch returned no rows (live + fallback both empty)"
             )
 
-        fetched_at = datetime.now(UTC).isoformat()
-        snapshot_as_of = self._utc_today().isoformat()
+        snapshot_as_of = (
+            self._date_from_http_header(last_modified) or self._utc_today()
+        ).isoformat()
+        source_name = (
+            _MY_FALLBACK_SOURCE_NAME if fetch_mode == "csv_fallback" else _MY_SOURCE_NAME
+        )
         source_metadata: dict[str, Any] = {
-            "source_urls": [],
-            "fetched_at": fetched_at,
-            "http_last_modified": None,
-            "tls_verification_disabled": False,
-            "fetch_mode": "csv_fallback",
-            "fetch_errors": {},
+            "source_urls": [settings.my_universe_source_url] if settings.my_universe_source_url else [],
+            "fetched_at": fetched_at or datetime.now(UTC).isoformat(),
+            "http_last_modified": last_modified,
+            "tls_verification_disabled": tls_verification_disabled,
+            "fetch_mode": fetch_mode,
+            "fetch_errors": fetch_errors,
             "row_counts": {
                 "xkls": len(rows),
                 "total": len(rows),
             },
-            "fallback_csv_path": settings.my_universe_fallback_csv_path,
         }
+        if fetch_mode == "csv_fallback":
+            source_metadata["fallback_csv_path"] = settings.my_universe_fallback_csv_path
+        else:
+            source_metadata["page_count"] = page_count
+
+        snapshot_id_prefix = "bursa-equities" if fetch_mode == "live_http" else "my-csv-fallback"
         return OfficialMarketUniverseSnapshot(
             market="MY",
-            source_name=_MY_FALLBACK_SOURCE_NAME,
-            snapshot_id=f"my-csv-fallback-{snapshot_as_of}",
+            source_name=source_name,
+            snapshot_id=f"{snapshot_id_prefix}-{snapshot_as_of}",
             snapshot_as_of=snapshot_as_of,
             source_metadata=source_metadata,
             rows=tuple(rows),
         )
+
+    def _fetch_my_live(self) -> dict[str, Any]:
+        """Download and parse the Bursa Malaysia equities-listing API response.
+
+        The Bursa endpoint is paginated; the first request reveals
+        ``totalPages`` (or an equivalent meta field) and subsequent pages are
+        requested by appending ``&page=N`` to the configured URL. The page
+        count is capped at ``settings.my_universe_max_pages`` so a runaway
+        ``totalPages`` value cannot trigger an unbounded fetch loop.
+
+        Raises ``ValueError`` when the response cannot be parsed or fewer
+        than ``settings.my_live_min_universe_size`` rows survive the filter.
+        """
+        base_url = settings.my_universe_source_url
+        # Bursa serves CDN-cached JSON; a browser-like UA + Referer reduces 403s.
+        browser_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.bursamalaysia.com/market_information/equities_prices",
+        }
+
+        first_fetched = self._http_get(base_url, extra_headers=browser_headers)
+        first_payload = self._decode_my_payload(first_fetched.content)
+        records: list[Any] = list(self._extract_my_records(first_payload))
+
+        max_pages = int(getattr(settings, "my_universe_max_pages", 100) or 100)
+        total_pages = self._extract_my_total_pages(first_payload)
+        page_count = 1
+        if total_pages > 1:
+            capped_pages = min(total_pages, max_pages)
+            for page in range(2, capped_pages + 1):
+                paged_url = self._with_query_param(base_url, "page", str(page))
+                page_fetched = self._http_get(paged_url, extra_headers=browser_headers)
+                page_payload = self._decode_my_payload(page_fetched.content)
+                page_records = self._extract_my_records(page_payload)
+                if not page_records:
+                    break
+                records.extend(page_records)
+                page_count += 1
+
+        rows = self._parse_my_records(records)
+        if not rows:
+            raise ValueError(
+                "Bursa Malaysia API response yielded no equity rows after filtering"
+            )
+
+        min_universe_size = int(getattr(settings, "my_live_min_universe_size", 0) or 0)
+        if min_universe_size > 0 and len(rows) < min_universe_size:
+            raise ValueError(
+                f"MY live universe has only {len(rows)} rows "
+                f"(below {min_universe_size} threshold); refusing to publish — "
+                "the Bursa Malaysia API response shape may have changed"
+            )
+
+        return {
+            "rows": sorted(rows, key=lambda row: row["symbol"]),
+            "fetched_at": first_fetched.fetched_at,
+            "http_last_modified": first_fetched.last_modified,
+            "tls_verification_disabled": first_fetched.tls_verification_disabled,
+            "page_count": page_count,
+        }
+
+    @classmethod
+    def _decode_my_payload(cls, content: bytes) -> Any:
+        """Decode a Bursa response body into a JSON-native object.
+
+        Raises ``ValueError`` if the body is not valid JSON so the live path
+        falls back to the seed CSV instead of publishing an empty snapshot.
+        """
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("utf-8", errors="replace")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Bursa Malaysia API response is not valid JSON: {exc}"
+            ) from exc
+
+    @classmethod
+    def _parse_my_api_json(cls, content: bytes) -> list[dict[str, Any]]:
+        """Convenience parser used by tests: bytes -> filtered row list."""
+        payload = cls._decode_my_payload(content)
+        return cls._parse_my_records(cls._extract_my_records(payload))
+
+    @classmethod
+    def _parse_my_records(cls, records: Iterable[Any]) -> list[dict[str, Any]]:
+        """Filter and normalize a list of Bursa issuer records.
+
+        Each record must carry a 4-digit numeric local code in one of the
+        canonical fields (``code`` / ``stock_code`` / ``symbol`` / ``ticker``
+        / ``short_name``). Records must be listed on the Main Market or ACE
+        Market (the equity boards); a missing board is accepted permissively
+        so partial responses are not silently discarded. REITs, business
+        trusts, ETFs, and structured warrants are dropped via
+        ``_my_is_excluded_instrument``.
+        """
+        rows: list[dict[str, Any]] = []
+        seen_codes: set[str] = set()
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            local_code = ""
+            for key in ("code", "stock_code", "symbol", "ticker", "short_name"):
+                value = record.get(key)
+                if value is None:
+                    continue
+                candidate = str(value).strip().upper()
+                if _MY_LIVE_TICKER_RE.fullmatch(candidate):
+                    local_code = candidate
+                    break
+            if not local_code or local_code in seen_codes:
+                continue
+
+            board_raw = str(
+                record.get("board")
+                or record.get("market")
+                or record.get("m")
+                or record.get("mkt")
+                or ""
+            ).strip().upper()
+            if board_raw and not cls._my_board_is_equity(board_raw):
+                continue
+
+            name = str(
+                record.get("name")
+                or record.get("company_name")
+                or record.get("company")
+                or record.get("issuer_name")
+                or record.get("n")
+                or ""
+            ).strip()
+            if not name:
+                continue
+
+            sector = str(
+                record.get("sector")
+                or record.get("sec")
+                or ""
+            ).strip()
+            industry = str(
+                record.get("industry")
+                or record.get("sub_sector")
+                or record.get("subsector")
+                or ""
+            ).strip()
+            if cls._my_is_excluded_instrument(name, sector, industry):
+                continue
+
+            isin = str(record.get("isin") or "").strip().upper()
+
+            seen_codes.add(local_code)
+            rows.append(
+                {
+                    "symbol": f"{local_code}.KL",
+                    "name": name,
+                    "exchange": "XKLS",
+                    "sector": sector,
+                    "industry": industry,
+                    "market_cap": None,
+                    "isin": isin,
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _extract_my_records(payload: Any) -> list[Any]:
+        """Walk the Bursa response payload and return the issuer record list."""
+        if isinstance(payload, list):
+            return payload
+        if not isinstance(payload, dict):
+            return []
+        for key in (
+            "data",
+            "data_list",
+            "securities",
+            "items",
+            "results",
+            "rows",
+            "equities",
+            "records",
+        ):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                return candidate
+            if isinstance(candidate, dict):
+                for nested_key in (
+                    "data",
+                    "data_list",
+                    "rows",
+                    "items",
+                    "securities",
+                    "equities",
+                    "records",
+                ):
+                    nested = candidate.get(nested_key)
+                    if isinstance(nested, list):
+                        return nested
+        return []
+
+    @staticmethod
+    def _extract_my_total_pages(payload: Any) -> int:
+        """Read the page count from common Bursa-style meta wrappings.
+
+        Returns ``1`` when no pagination metadata is present so the live
+        fetch treats the response as single-page rather than re-requesting.
+        """
+        if not isinstance(payload, dict):
+            return 1
+        candidates: list[Any] = []
+        for meta_key in ("meta", "pagination", "page_info"):
+            meta = payload.get(meta_key)
+            if isinstance(meta, dict):
+                for field in ("totalPages", "total_pages", "pageCount", "last_page"):
+                    if field in meta:
+                        candidates.append(meta[field])
+        for field in ("totalPages", "total_pages", "pageCount", "last_page"):
+            if field in payload:
+                candidates.append(payload[field])
+        for raw in candidates:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return 1
+
+    @staticmethod
+    def _with_query_param(url: str, key: str, value: str) -> str:
+        """Return ``url`` with ``key=value`` set (replaces any existing value).
+
+        Used to walk Bursa's paginated endpoint without depending on
+        ``urllib.parse``'s behavior of dropping the existing query string
+        when the URL is incomplete.
+        """
+        pattern = re.compile(rf"([?&]){re.escape(key)}=[^&]*")
+        if pattern.search(url):
+            return pattern.sub(rf"\g<1>{key}={value}", url)
+        separator = "&" if "?" in url else "?"
+        return f"{url}{separator}{key}={value}"
+
+    @staticmethod
+    def _my_board_is_equity(board: str) -> bool:
+        """Accept Bursa Main and ACE markets; reject LEAP and non-equity venues.
+
+        Board labels arrive in several shapes (``MAIN MARKET``, ``MAIN-MKT``,
+        ``MAIN_MKT``, ``MAIN``, ``ACE MARKET``, ``ACE-MKT``, etc.). A
+        normalized token check accepts any spelling that contains a ``MAIN``
+        or ``ACE`` token; LEAP Market and other non-equity venues are
+        rejected.
+        """
+        normalized = re.sub(r"[^A-Z]+", " ", str(board or "").upper()).strip()
+        if not normalized:
+            return True
+        tokens = set(normalized.split())
+        return bool(tokens & _MY_EQUITY_BOARD_TOKENS)
+
+    @staticmethod
+    def _my_is_excluded_instrument(name: str, sector: str, industry: str) -> bool:
+        """Identify Bursa rows that fall outside the supported common-equity universe.
+
+        Bursa lists REITs, business trusts, ETFs, and structured warrants
+        alongside common stocks. REIT/Trust/ETF/Warrant tokens are matched
+        at word boundaries via the same haystack split used for SG so
+        ordinary issuer names containing substrings (e.g., ``Trustco``)
+        are not falsely excluded. Bursa also appends ``-WA`` / ``-WB``
+        suffixes to call-warrant names and ``-PA`` / ``-PB`` to preference
+        share lines; those are caught separately because the 4-digit
+        local code on its own is ambiguous.
+        """
+        haystack = " ".join(part for part in (industry, sector, name) if part).lower()
+        if haystack:
+            tokens = set(re.split(r"[^a-z0-9]+", haystack))
+            if tokens & _MY_EXCLUDED_TOKENS:
+                return True
+        upper_name = (name or "").upper()
+        if re.search(r"-W[A-Z]?\b", upper_name) or re.search(r"-PA?\b", upper_name):
+            return True
+        return False
 
     @classmethod
     def _load_my_csv_fallback(cls) -> list[dict[str, Any]]:

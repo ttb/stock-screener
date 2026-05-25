@@ -115,6 +115,15 @@ jobs:
       REDIS_ENABLED: "false"
       DATABASE_URL: postgresql://stockscanner:stockscanner@localhost:5432/stockscanner
       SG_UNIVERSE_SOURCE_URL: ${{ matrix.market == 'SG' && 'https://api.sgx.com/securities/v1.1?excludetypes=bonds' || '' }}
+      # Bursa Malaysia equities-listing JSON endpoint. The bundled CSV
+      # fallback only ships the FBM KLCI 30 + a handful of Top 100 names
+      # (~47 issuers); the live endpoint covers all Main + ACE Market
+      # listings. Override via the ``MY_UNIVERSE_SOURCE_URL`` Actions
+      # variable when the operator has confirmed acceptable use; the
+      # default URL below is the public endpoint that powers the
+      # equities_prices page. On any HTTP or parse failure the fetcher
+      # falls back to the bundled CSV so a broken URL is not a regression.
+      MY_UNIVERSE_SOURCE_URL: ${{ matrix.market == 'MY' && (vars.MY_UNIVERSE_SOURCE_URL || 'https://www.bursamalaysia.com/api/v1/equities_prices?legacy=1&format=json&perPage=2000&board=MAIN-MKT,ACE-MKT&sector=&sub_sector=&page=1') || '' }}
 
     steps:
       - uses: actions/checkout@v4

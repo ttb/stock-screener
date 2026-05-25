@@ -1906,3 +1906,342 @@ def test_parse_sg_api_json_handles_empty_dict_payload():
     """An unrecognized response shape returns no rows rather than raising."""
     rows = OfficialMarketUniverseSourceService._parse_sg_api_json(b'{"foo": "bar"}')
     assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# MY (Bursa Malaysia) live fetch
+# ---------------------------------------------------------------------------
+
+_MY_API_URL = (
+    "https://www.bursamalaysia.com/api/v1/equities_prices"
+    "?legacy=1&format=json&perPage=2000&board=MAIN-MKT,ACE-MKT&page=1"
+)
+
+
+def _fetched_my(content: bytes, *, url: str = _MY_API_URL, last_modified: str | None = None) -> _FetchedSource:
+    return _FetchedSource(
+        url=url,
+        content=content,
+        fetched_at="2026-05-25T00:00:00+00:00",
+        last_modified=last_modified,
+        tls_verification_disabled=False,
+    )
+
+
+def test_fetch_my_snapshot_parses_bursa_api_json(monkeypatch):
+    """Live Bursa API JSON yields canonical .KL rows from Main + ACE markets."""
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "my_universe_source_url", _MY_API_URL)
+    monkeypatch.setattr(app_settings, "my_live_min_universe_size", 1)
+
+    service = OfficialMarketUniverseSourceService()
+    monkeypatch.setattr(
+        service, "_http_get",
+        lambda url, allow_insecure_fallback=False, extra_headers=None: _fetched_my(
+            _fixture_bytes("bursa_equities_fixture.json")
+        ),
+    )
+
+    snapshot = service.fetch_market_snapshot("MY")
+
+    assert snapshot.market == "MY"
+    assert snapshot.source_name == "bursa_official"
+    assert snapshot.source_metadata["fetch_mode"] == "live_http"
+    symbols = {row["symbol"] for row in snapshot.rows}
+    # Survives: Maybank, Public Bank, Tenaga, Inari (ACE). Dropped:
+    # Pavilion REIT, business trust, MyETF, -WA warrant, invalid ticker,
+    # LEAP-market row, and duplicate Maybank code.
+    assert symbols == {"1155.KL", "1295.KL", "5347.KL", "0166.KL"}
+    maybank = next(row for row in snapshot.rows if row["symbol"] == "1155.KL")
+    assert maybank["name"] == "MALAYAN BANKING BHD"
+    assert maybank["exchange"] == "XKLS"
+    assert maybank["sector"] == "Financial Services"
+    assert maybank["industry"] == "Banks"
+    assert maybank["isin"] == "MYL1155OO000"
+    assert maybank["market_cap"] is None
+    assert snapshot.snapshot_id.startswith("bursa-equities-")
+
+
+def test_fetch_my_snapshot_falls_back_on_http_error(monkeypatch, tmp_path):
+    """RequestException from the live fetch routes to the bundled CSV fallback."""
+    from app.config import settings as app_settings
+
+    fallback_csv = tmp_path / "my_fallback.csv"
+    fallback_csv.write_text(
+        "symbol,name,exchange,index,isin\n"
+        "1155.KL,Malayan Banking,XKLS,FBMKLCI,MYL1155OO000\n"
+        "1295.KL,Public Bank,XKLS,FBMKLCI,MYL1295OO007\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_settings, "my_universe_source_url", _MY_API_URL)
+    monkeypatch.setattr(app_settings, "my_universe_fallback_csv_path", str(fallback_csv))
+
+    service = OfficialMarketUniverseSourceService()
+    monkeypatch.setattr(
+        service, "_http_get",
+        lambda url, allow_insecure_fallback=False, extra_headers=None: (_ for _ in ()).throw(
+            requests.exceptions.ConnectionError("synthetic Bursa outage")
+        ),
+    )
+
+    snapshot = service.fetch_market_snapshot("MY")
+
+    assert snapshot.market == "MY"
+    assert snapshot.source_name == "my_manual_csv"
+    assert snapshot.source_metadata["fetch_mode"] == "csv_fallback"
+    assert "synthetic Bursa outage" in snapshot.source_metadata["fetch_errors"]["live_http"]
+    assert {row["symbol"] for row in snapshot.rows} == {"1155.KL", "1295.KL"}
+    assert snapshot.snapshot_id.startswith("my-csv-fallback-")
+
+
+def test_fetch_my_snapshot_uses_fallback_when_url_blank(monkeypatch, tmp_path):
+    """Blank ``my_universe_source_url`` forces CSV fallback without an HTTP attempt."""
+    from app.config import settings as app_settings
+
+    fallback_csv = tmp_path / "my_fallback.csv"
+    fallback_csv.write_text(
+        "symbol,name,exchange,index,isin\n"
+        "1155.KL,Malayan Banking,XKLS,FBMKLCI,MYL1155OO000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_settings, "my_universe_source_url", "")
+    monkeypatch.setattr(app_settings, "my_universe_fallback_csv_path", str(fallback_csv))
+
+    service = OfficialMarketUniverseSourceService()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("_http_get must not be called when source URL is blank")
+
+    monkeypatch.setattr(service, "_http_get", fail_if_called)
+
+    snapshot = service.fetch_market_snapshot("MY")
+
+    assert snapshot.source_name == "my_manual_csv"
+    assert snapshot.source_metadata["fetch_mode"] == "csv_fallback"
+    assert {row["symbol"] for row in snapshot.rows} == {"1155.KL"}
+
+
+def test_fetch_my_snapshot_falls_back_when_universe_too_small(monkeypatch, tmp_path):
+    """A live universe below the configured minimum size triggers fallback."""
+    from app.config import settings as app_settings
+
+    fallback_csv = tmp_path / "my_fallback.csv"
+    fallback_csv.write_text(
+        "symbol,name,exchange,index,isin\n"
+        "1155.KL,Malayan Banking,XKLS,FBMKLCI,MYL1155OO000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_settings, "my_universe_source_url", _MY_API_URL)
+    monkeypatch.setattr(app_settings, "my_universe_fallback_csv_path", str(fallback_csv))
+    monkeypatch.setattr(app_settings, "my_live_min_universe_size", 100)
+
+    service = OfficialMarketUniverseSourceService()
+    monkeypatch.setattr(
+        service, "_http_get",
+        lambda url, allow_insecure_fallback=False, extra_headers=None: _fetched_my(
+            json.dumps({"data": [
+                {"code": "1155", "name": "Malayan Banking", "board": "MAIN MARKET"},
+                {"code": "1295", "name": "Public Bank", "board": "MAIN MARKET"},
+            ]}).encode("utf-8")
+        ),
+    )
+
+    snapshot = service.fetch_market_snapshot("MY")
+
+    assert snapshot.source_name == "my_manual_csv"
+    assert snapshot.source_metadata["fetch_mode"] == "csv_fallback"
+    assert "below 100 threshold" in snapshot.source_metadata["fetch_errors"]["live_http"]
+    assert {row["symbol"] for row in snapshot.rows} == {"1155.KL"}
+
+
+def test_fetch_my_snapshot_walks_paginated_response(monkeypatch):
+    """``meta.totalPages > 1`` triggers additional ``&page=N`` fetches."""
+    from app.config import settings as app_settings
+
+    base_url = (
+        "https://www.bursamalaysia.com/api/v1/equities_prices"
+        "?legacy=1&format=json&perPage=2&page=1"
+    )
+    monkeypatch.setattr(app_settings, "my_universe_source_url", base_url)
+    monkeypatch.setattr(app_settings, "my_live_min_universe_size", 1)
+    monkeypatch.setattr(app_settings, "my_universe_max_pages", 100)
+
+    pages = {
+        1: {
+            "meta": {"totalPages": 3},
+            "data": [{"code": "1155", "name": "Malayan Banking", "board": "MAIN MARKET"}],
+        },
+        2: {
+            "meta": {"totalPages": 3},
+            "data": [{"code": "1295", "name": "Public Bank", "board": "MAIN MARKET"}],
+        },
+        3: {
+            "meta": {"totalPages": 3},
+            "data": [{"code": "5347", "name": "Tenaga Nasional", "board": "ACE MARKET"}],
+        },
+    }
+    requested_urls: list[str] = []
+
+    def fake_http_get(url, allow_insecure_fallback=False, extra_headers=None):
+        requested_urls.append(url)
+        match = re.search(r"[?&]page=(\d+)", url)
+        page_number = int(match.group(1)) if match else 1
+        return _fetched_my(json.dumps(pages[page_number]).encode("utf-8"), url=url)
+
+    service = OfficialMarketUniverseSourceService()
+    monkeypatch.setattr(service, "_http_get", fake_http_get)
+
+    snapshot = service.fetch_market_snapshot("MY")
+
+    assert snapshot.source_name == "bursa_official"
+    assert snapshot.source_metadata["page_count"] == 3
+    assert {row["symbol"] for row in snapshot.rows} == {
+        "1155.KL",
+        "1295.KL",
+        "5347.KL",
+    }
+    # Page=1 stayed the configured URL; subsequent pages bumped the param.
+    assert requested_urls[0].endswith("page=1")
+    assert any(url.endswith("page=2") for url in requested_urls)
+    assert any(url.endswith("page=3") for url in requested_urls)
+
+
+def test_fetch_my_snapshot_caps_runaway_pagination(monkeypatch):
+    """A pathological ``totalPages`` value is clamped to ``my_universe_max_pages``."""
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "my_universe_source_url", _MY_API_URL)
+    monkeypatch.setattr(app_settings, "my_live_min_universe_size", 1)
+    monkeypatch.setattr(app_settings, "my_universe_max_pages", 2)
+
+    fetch_calls = {"count": 0}
+
+    def fake_http_get(url, allow_insecure_fallback=False, extra_headers=None):
+        fetch_calls["count"] += 1
+        # Pretend the server claims 10,000 pages on every response.
+        payload = {
+            "meta": {"totalPages": 10_000},
+            "data": [
+                {
+                    "code": f"{1000 + fetch_calls['count']:04d}",
+                    "name": f"Issuer {fetch_calls['count']}",
+                    "board": "MAIN MARKET",
+                }
+            ],
+        }
+        return _fetched_my(json.dumps(payload).encode("utf-8"), url=url)
+
+    service = OfficialMarketUniverseSourceService()
+    monkeypatch.setattr(service, "_http_get", fake_http_get)
+
+    snapshot = service.fetch_market_snapshot("MY")
+
+    assert snapshot.source_metadata["page_count"] == 2
+    assert fetch_calls["count"] == 2
+    # Sanity: clamp prevented an unbounded loop.
+    assert len(snapshot.rows) == 2
+
+
+def test_parse_my_api_json_handles_alternate_payload_shapes():
+    """The Bursa API has shipped several wrapping shapes; the parser walks them."""
+    nested = json.dumps(
+        {"data": {"data_list": [{"code": "1155", "name": "Maybank", "board": "MAIN MARKET"}]}}
+    ).encode("utf-8")
+    rows = OfficialMarketUniverseSourceService._parse_my_api_json(nested)
+    assert [r["symbol"] for r in rows] == ["1155.KL"]
+
+    bare = json.dumps([{"stock_code": "1295", "company_name": "Public Bank"}]).encode("utf-8")
+    rows_bare = OfficialMarketUniverseSourceService._parse_my_api_json(bare)
+    assert [r["symbol"] for r in rows_bare] == ["1295.KL"]
+
+
+def test_parse_my_api_json_raises_on_invalid_json():
+    with pytest.raises(ValueError, match="not valid JSON"):
+        OfficialMarketUniverseSourceService._parse_my_api_json(b"not json")
+
+
+def test_parse_my_api_json_drops_reits_trusts_etfs_and_warrants():
+    """Bursa returns REITs, trusts, ETFs and warrants alongside common equities."""
+    payload = json.dumps(
+        {
+            "data": [
+                {"code": "5212", "name": "PAVILION REIT", "board": "MAIN MARKET", "sub_sector": "REITs"},
+                {"code": "5283", "name": "ECO WORLD BUSINESS TRUST", "board": "MAIN MARKET"},
+                {"code": "0820", "name": "MYETF DOW JONES U.S. TITANS 50", "board": "MAIN MARKET", "sector": "ETF"},
+                {"code": "5279", "name": "PETRON MALAYSIA-WA", "board": "MAIN MARKET"},
+                {"code": "1155", "name": "MALAYAN BANKING BHD", "board": "MAIN MARKET"},
+            ]
+        }
+    ).encode("utf-8")
+    rows = OfficialMarketUniverseSourceService._parse_my_api_json(payload)
+    assert [r["symbol"] for r in rows] == ["1155.KL"]
+
+
+def test_parse_my_api_json_drops_non_equity_boards():
+    """Only Main Market and ACE Market listings survive; LEAP and others are excluded."""
+    payload = json.dumps(
+        {
+            "data": [
+                {"code": "1155", "name": "Maybank", "board": "MAIN MARKET"},
+                {"code": "0166", "name": "Inari", "board": "ACE-MKT"},
+                {"code": "9999", "name": "LEAP Listed", "board": "LEAP MARKET"},
+                {"code": "8888", "name": "No Board"},
+            ]
+        }
+    ).encode("utf-8")
+    rows = OfficialMarketUniverseSourceService._parse_my_api_json(payload)
+    # Main, ACE, and missing-board (permissive) survive; LEAP is rejected.
+    assert {r["symbol"] for r in rows} == {"1155.KL", "0166.KL", "8888.KL"}
+
+
+def test_my_is_excluded_instrument_matches_at_word_boundary():
+    """Bare ``trust`` / ``etf`` match only as tokens so non-exotic issuers are kept."""
+    excluded = OfficialMarketUniverseSourceService._my_is_excluded_instrument
+    assert excluded("Pavilion REIT", "Real Estate", "REITs") is True
+    assert excluded("Eco World Business Trust", "Property", "Trusts") is True
+    assert excluded("MyETF Dow Jones", "ETF", "ETF") is True
+    assert excluded("Petron Malaysia-WA", "", "") is True
+    # ``Trustco`` is not a trust; ``ETFGroup`` is not an ETF — both must survive.
+    assert excluded("Trustco Holdings", "Financials", "Diversified Financials") is False
+    assert excluded("ETFGroup Holdings", "Industrials", "Diversified") is False
+    assert excluded("Malayan Banking Bhd", "Financials", "Banks") is False
+
+
+def test_parse_my_api_json_handles_empty_dict_payload():
+    """An unrecognized response shape returns no rows rather than raising."""
+    rows = OfficialMarketUniverseSourceService._parse_my_api_json(b'{"foo": "bar"}')
+    assert rows == []
+
+
+def test_extract_my_total_pages_reads_common_meta_shapes():
+    """``totalPages`` can live in ``meta``, ``pagination``, or the root object."""
+    assert OfficialMarketUniverseSourceService._extract_my_total_pages(
+        {"meta": {"totalPages": 5}, "data": []}
+    ) == 5
+    assert OfficialMarketUniverseSourceService._extract_my_total_pages(
+        {"pagination": {"total_pages": 7}, "data": []}
+    ) == 7
+    assert OfficialMarketUniverseSourceService._extract_my_total_pages(
+        {"totalPages": 3, "data": []}
+    ) == 3
+    # Missing pagination metadata -> treat as single-page.
+    assert OfficialMarketUniverseSourceService._extract_my_total_pages({"data": []}) == 1
+    assert OfficialMarketUniverseSourceService._extract_my_total_pages([]) == 1
+
+
+def test_with_query_param_replaces_existing_value_and_appends_missing():
+    """``_with_query_param`` powers Bursa pagination — it must rewrite cleanly."""
+    method = OfficialMarketUniverseSourceService._with_query_param
+    # Replaces existing value.
+    assert method(
+        "https://example.com/api?page=1&perPage=20", "page", "3"
+    ) == "https://example.com/api?page=3&perPage=20"
+    # Appends to existing query string.
+    assert method(
+        "https://example.com/api?perPage=20", "page", "2"
+    ) == "https://example.com/api?perPage=20&page=2"
+    # Adds query string when none exists.
+    assert method(
+        "https://example.com/api", "page", "1"
+    ) == "https://example.com/api?page=1"
