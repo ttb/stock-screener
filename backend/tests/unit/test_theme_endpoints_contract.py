@@ -38,7 +38,7 @@ def test_theme_openapi_contract_includes_merge_rankings_candidates_and_relations
     assert relationship_graph_path.endswith("/themes/relationship-graph")
 
     for forbidden_path in paths:
-        assert not forbidden_path.startswith("/themes/twitter/session"), (
+        assert "/themes/twitter/session" not in forbidden_path, (
             f"twitter session endpoint should be removed: {forbidden_path}"
         )
 
