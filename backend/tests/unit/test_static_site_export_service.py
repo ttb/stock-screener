@@ -509,9 +509,53 @@ def test_resolve_static_default_filters_returns_per_market_threshold():
     resolve = StaticSiteExportService.resolve_static_default_filters
     assert resolve("US") == {"minVolume": 100_000_000}
     assert resolve("sg") == {"minVolume": 1_300_000}
+    assert resolve("MY") == {"minVolume": 4_500_000}
     assert resolve("HK") == STATIC_DEFAULT_SCAN_FILTERS_BY_MARKET["HK"]
     assert resolve("ZZ") == STATIC_DEFAULT_SCAN_FILTERS_FALLBACK
     assert resolve(None) == STATIC_DEFAULT_SCAN_FILTERS_FALLBACK
+
+
+def test_static_default_min_volume_filters_notional_turnover_not_share_count():
+    rows = [
+        {"symbol": "LOCAL_LIQUID", "volume": 5_000_000, "avg_volume_shares": 1_000},
+        {"symbol": "LOCAL_ILLIQUID", "volume": 1_000, "avg_volume_shares": 10_000_000},
+    ]
+
+    filtered = StaticSiteExportService._apply_static_default_filters(  # noqa: SLF001
+        rows,
+        default_filters={"minVolume": 4_500_000},
+    )
+
+    assert [row["symbol"] for row in filtered] == ["LOCAL_LIQUID"]
+
+
+def test_write_json_replaces_non_finite_numbers_with_null(tmp_path):
+    path = tmp_path / "markets" / "my" / "charts" / "1155.KL.json"
+    payload = {
+        "symbol": "1155.KL",
+        "stock_data": {
+            "perf_month": float("nan"),
+            "week_52_high_distance": float("inf"),
+            "week_52_low_distance": float("-inf"),
+            "nested": [1.25, float("nan")],
+        },
+    }
+
+    StaticSiteExportService._write_json(path, payload)  # noqa: SLF001
+
+    text = path.read_text(encoding="utf-8")
+    assert "NaN" not in text
+    assert "Infinity" not in text
+    loaded = json.loads(
+        text,
+        parse_constant=lambda constant: (_ for _ in ()).throw(
+            AssertionError(f"Invalid JSON constant emitted: {constant}")
+        ),
+    )
+    assert loaded["stock_data"]["perf_month"] is None
+    assert loaded["stock_data"]["week_52_high_distance"] is None
+    assert loaded["stock_data"]["week_52_low_distance"] is None
+    assert loaded["stock_data"]["nested"] == [1.25, None]
 
 
 def test_export_scan_bundle_uses_sg_threshold_for_sg_market(

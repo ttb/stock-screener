@@ -1918,7 +1918,12 @@ _MY_API_URL = (
 )
 
 
-def _fetched_my(content: bytes, *, url: str = _MY_API_URL, last_modified: str | None = None) -> _FetchedSource:
+def _fetched_my(
+    content: bytes,
+    *,
+    url: str = _MY_API_URL,
+    last_modified: str | None = None,
+) -> _FetchedSource:
     return _FetchedSource(
         url=url,
         content=content,
@@ -1926,6 +1931,27 @@ def _fetched_my(content: bytes, *, url: str = _MY_API_URL, last_modified: str | 
         last_modified=last_modified,
         tls_verification_disabled=False,
     )
+
+
+def _my_fallback_csv_text(count: int = 1) -> str:
+    rows = ["symbol,name,exchange,index,isin"]
+    for idx in range(count):
+        if idx == 0:
+            rows.append("1155.KL,Malayan Banking,XKLS,FBMKLCI,MYL1155OO000")
+        else:
+            rows.append(f"{2000 + idx:04d}.KL,Issuer {idx},XKLS,,")
+    return "\n".join(rows) + "\n"
+
+
+def test_bundled_my_fallback_covers_full_main_and_ace_universe():
+    """The committed MY fallback must stay broad enough for static builds."""
+
+    rows = OfficialMarketUniverseSourceService._load_my_csv_fallback()
+
+    assert len(rows) >= 300
+    assert any(row["symbol"] == "1155.KL" for row in rows)
+    vitrox = next(row for row in rows if row["symbol"] == "0097.KL")
+    assert "VITROX" in vitrox["name"].upper()
 
 
 def test_fetch_my_snapshot_parses_bursa_api_json(monkeypatch):
@@ -1937,7 +1963,8 @@ def test_fetch_my_snapshot_parses_bursa_api_json(monkeypatch):
 
     service = OfficialMarketUniverseSourceService()
     monkeypatch.setattr(
-        service, "_http_get",
+        service,
+        "_http_get",
         lambda url, allow_insecure_fallback=False, extra_headers=None: _fetched_my(
             _fixture_bytes("bursa_equities_fixture.json")
         ),
@@ -1976,10 +2003,12 @@ def test_fetch_my_snapshot_falls_back_on_http_error(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(app_settings, "my_universe_source_url", _MY_API_URL)
     monkeypatch.setattr(app_settings, "my_universe_fallback_csv_path", str(fallback_csv))
+    monkeypatch.setattr(app_settings, "my_live_min_universe_size", 0)
 
     service = OfficialMarketUniverseSourceService()
     monkeypatch.setattr(
-        service, "_http_get",
+        service,
+        "_http_get",
         lambda url, allow_insecure_fallback=False, extra_headers=None: (_ for _ in ()).throw(
             requests.exceptions.ConnectionError("synthetic Bursa outage")
         ),
@@ -2000,13 +2029,10 @@ def test_fetch_my_snapshot_uses_fallback_when_url_blank(monkeypatch, tmp_path):
     from app.config import settings as app_settings
 
     fallback_csv = tmp_path / "my_fallback.csv"
-    fallback_csv.write_text(
-        "symbol,name,exchange,index,isin\n"
-        "1155.KL,Malayan Banking,XKLS,FBMKLCI,MYL1155OO000\n",
-        encoding="utf-8",
-    )
+    fallback_csv.write_text(_my_fallback_csv_text(), encoding="utf-8")
     monkeypatch.setattr(app_settings, "my_universe_source_url", "")
     monkeypatch.setattr(app_settings, "my_universe_fallback_csv_path", str(fallback_csv))
+    monkeypatch.setattr(app_settings, "my_live_min_universe_size", 0)
 
     service = OfficialMarketUniverseSourceService()
 
@@ -2022,28 +2048,49 @@ def test_fetch_my_snapshot_uses_fallback_when_url_blank(monkeypatch, tmp_path):
     assert {row["symbol"] for row in snapshot.rows} == {"1155.KL"}
 
 
+def test_fetch_my_snapshot_rejects_tiny_fallback_csv(monkeypatch, tmp_path):
+    from app.config import settings as app_settings
+
+    fallback_csv = tmp_path / "my_tiny.csv"
+    fallback_csv.write_text(
+        "symbol,name,exchange,index,isin\n"
+        "1155.KL,Malayan Banking Berhad,XKLS,,\n"
+        "1295.KL,Public Bank Berhad,XKLS,,\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_settings, "my_universe_source_url", "")
+    monkeypatch.setattr(app_settings, "my_universe_fallback_csv_path", str(fallback_csv))
+    monkeypatch.setattr(app_settings, "my_live_min_universe_size", 300)
+
+    service = OfficialMarketUniverseSourceService()
+
+    with pytest.raises(ValueError, match="below 300 threshold"):
+        service.fetch_market_snapshot("MY")
+
+
 def test_fetch_my_snapshot_falls_back_when_universe_too_small(monkeypatch, tmp_path):
     """A live universe below the configured minimum size triggers fallback."""
     from app.config import settings as app_settings
 
     fallback_csv = tmp_path / "my_fallback.csv"
-    fallback_csv.write_text(
-        "symbol,name,exchange,index,isin\n"
-        "1155.KL,Malayan Banking,XKLS,FBMKLCI,MYL1155OO000\n",
-        encoding="utf-8",
-    )
+    fallback_csv.write_text(_my_fallback_csv_text(100), encoding="utf-8")
     monkeypatch.setattr(app_settings, "my_universe_source_url", _MY_API_URL)
     monkeypatch.setattr(app_settings, "my_universe_fallback_csv_path", str(fallback_csv))
     monkeypatch.setattr(app_settings, "my_live_min_universe_size", 100)
 
     service = OfficialMarketUniverseSourceService()
     monkeypatch.setattr(
-        service, "_http_get",
+        service,
+        "_http_get",
         lambda url, allow_insecure_fallback=False, extra_headers=None: _fetched_my(
-            json.dumps({"data": [
-                {"code": "1155", "name": "Malayan Banking", "board": "MAIN MARKET"},
-                {"code": "1295", "name": "Public Bank", "board": "MAIN MARKET"},
-            ]}).encode("utf-8")
+            json.dumps(
+                {
+                    "data": [
+                        {"code": "1155", "name": "Malayan Banking", "board": "MAIN MARKET"},
+                        {"code": "1295", "name": "Public Bank", "board": "MAIN MARKET"},
+                    ]
+                }
+            ).encode("utf-8")
         ),
     )
 
@@ -2052,7 +2099,8 @@ def test_fetch_my_snapshot_falls_back_when_universe_too_small(monkeypatch, tmp_p
     assert snapshot.source_name == "my_manual_csv"
     assert snapshot.source_metadata["fetch_mode"] == "csv_fallback"
     assert "below 100 threshold" in snapshot.source_metadata["fetch_errors"]["live_http"]
-    assert {row["symbol"] for row in snapshot.rows} == {"1155.KL"}
+    assert len(snapshot.rows) == 100
+    assert any(row["symbol"] == "1155.KL" for row in snapshot.rows)
 
 
 def test_fetch_my_snapshot_walks_paginated_response(monkeypatch):

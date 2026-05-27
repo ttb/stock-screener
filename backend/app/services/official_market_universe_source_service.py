@@ -1537,6 +1537,12 @@ class OfficialMarketUniverseSourceService:
             raise ValueError(
                 "MY official universe fetch returned no rows (live + fallback both empty)"
             )
+        min_size = int(settings.my_live_min_universe_size or 0)
+        if fetch_mode == "csv_fallback" and min_size and len(rows) < min_size:
+            raise ValueError(
+                "MY official universe fetch returned "
+                f"{len(rows)} rows from fallback CSV, below {min_size} threshold"
+            )
 
         snapshot_as_of = (
             self._date_from_http_header(last_modified) or self._utc_today()

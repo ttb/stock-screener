@@ -227,12 +227,11 @@ class Settings(BaseSettings):
     my_universe_fallback_csv_path: str = str(
         _PROJECT_ROOT / "data" / "my_klse_constituents.csv"
     )
-    # Bursa hosts ~900 issuers across Main + ACE markets. The bundled fallback
-    # ships the FBM KLCI 30 plus a handful of FBM Top 100 names (~47 names);
-    # setting the live floor at 200 catches a broken Bursa response without
-    # rejecting routine listing churn. Set to 0 to disable the floor and
-    # always trust the live Bursa feed.
-    my_live_min_universe_size: int = 200
+    # Bursa hosts ~1,000 issuers across Main + ACE markets. The live/fallback
+    # floor catches broken Bursa responses and accidental regression to a tiny
+    # index-only CSV seed without rejecting routine listing churn. Set to 0 to
+    # disable the floor and always trust the live Bursa feed/fallback CSV.
+    my_live_min_universe_size: int = 300
     # Bursa API pages typically cap at ~20 rows/page; ~900 issuers fit well
     # under a 100-page ceiling. The cap exists so a runaway ``totalPages``
     # value in a malformed response cannot trigger an unbounded fetch loop.

@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 import json
 import logging
 import math
+from numbers import Integral, Real
 from pathlib import Path
 import shutil
 from typing import Any
@@ -2049,9 +2050,37 @@ class StaticSiteExportService:
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True, default=_json_default) + "\n",
+            json.dumps(
+                _sanitize_static_json(payload),
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+                default=_json_default,
+            ) + "\n",
             encoding="utf-8",
         )
+
+
+def _sanitize_static_json(value: Any) -> Any:
+    """Return a browser-parseable JSON value tree."""
+
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, dict):
+        return {key: _sanitize_static_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_static_json(item) for item in value]
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
 
 
 def _json_default(value: Any) -> Any:
