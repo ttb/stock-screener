@@ -1,4 +1,4 @@
-"""Drift guards for duplicated Market facts.
+"""Cross-layer drift guards for duplicated Market facts.
 
 These tests intentionally document today's compatibility drift instead of
 changing runtime behavior. Later harmonization tasks should remove the
@@ -19,9 +19,22 @@ from app.services.security_master_service import SecurityMasterResolver
 from app.tasks import market_queues
 
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
+REPO_ROOT = Path(__file__).resolve().parents[2].parent
 
-DOCUMENTED_BACKWARD_COMPATIBLE_CATALOG_ALIASES: dict[str, set[str]] = {
+DOCUMENTED_CATALOG_MIC_CODES: dict[str, set[str]] = {
+    "US": set(),
+    "HK": {"XHKG"},
+    "IN": {"XNSE", "XBOM"},
+    "JP": {"XTKS"},
+    "KR": {"XKRX"},
+    "TW": {"XTAI"},
+    "CN": {"XSHG", "XSHE", "XBSE"},
+    "CA": {"XTSE", "XTNX"},
+    "DE": {"XETR", "XFRA"},
+    "SG": {"XSES"},
+}
+
+DOCUMENTED_CATALOG_ALIAS_CODES: dict[str, set[str]] = {
     "US": {"NYSE", "NASDAQ", "AMEX"},
     "HK": {"HKEX", "SEHK"},
     "IN": {"NSE", "BSE"},
@@ -56,6 +69,9 @@ def _catalog_market_codes_by_capability(capability: str) -> set[str]:
 
 
 def _fallback_catalog_codes_from_frontend() -> list[str]:
+    # Phase 0 only guards fallback code drift. A generated/structured frontend
+    # catalog fixture belongs with the later frontend contract standardization
+    # work, when fallback data is removed or generated from backend facts.
     runtime_context = REPO_ROOT / "frontend" / "src" / "contexts" / "RuntimeContext.jsx"
     source = runtime_context.read_text()
     fallback_catalog = source.split(
@@ -82,20 +98,15 @@ def test_runtime_order_surfaces_match_catalog_order() -> None:
     assert market_queues.SUPPORTED_MARKETS == catalog_order
 
 
-def test_catalog_exchange_aliases_are_mics_or_documented_compatibility_aliases() -> None:
+def test_catalog_exchange_codes_are_documented_as_mics_or_compatibility_aliases() -> None:
     catalog = get_market_catalog()
 
     for code in catalog.supported_market_codes():
-        documented_aliases = DOCUMENTED_BACKWARD_COMPATIBLE_CATALOG_ALIASES.get(
-            code,
-            set(),
+        documented_codes = (
+            DOCUMENTED_CATALOG_MIC_CODES.get(code, set())
+            | DOCUMENTED_CATALOG_ALIAS_CODES.get(code, set())
         )
-        undocumented = {
-            exchange
-            for exchange in catalog.get(code).exchanges
-            if not exchange.startswith("X") and exchange not in documented_aliases
-        }
-        assert undocumented == set(), f"{code} has undocumented aliases: {undocumented}"
+        assert set(catalog.get(code).exchanges) == documented_codes
 
 
 def test_catalog_and_registry_exchange_alias_drift_is_documented() -> None:
@@ -113,10 +124,10 @@ def test_catalog_and_registry_exchange_alias_drift_is_documented() -> None:
         )
 
 
-def test_bse_alias_ambiguity_is_market_scoped_in_current_callers() -> None:
+def test_bse_alias_ambiguity_is_documented_with_market_context() -> None:
     resolver = SecurityMasterResolver()
 
-    india_bse = resolver.resolve_identity(symbol="500325", exchange="BSE")
+    india_bse = resolver.resolve_identity(symbol="500325", market="IN", exchange="BSE")
     china_bse = resolver.resolve_identity(symbol="920118", market="CN", exchange="BSE")
 
     assert india_bse.market == "IN"
