@@ -98,6 +98,10 @@ class ProviderDataPlanRegistry:
             for (market, mic, dataset), steps in (overrides or {}).items()
         }
 
+    @property
+    def version(self) -> str:
+        return self._version
+
     @staticmethod
     def _normalize_dataset(dataset: str) -> str:
         return str(dataset or "").strip().lower()

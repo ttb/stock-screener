@@ -964,6 +964,106 @@ def test_populate_universe_batches_new_rows_with_required_defaults(monkeypatch):
     db.close()
 
 
+def test_populate_universe_uses_shared_pipeline_with_finviz_source_semantics(monkeypatch):
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    service = StockUniverseService()
+    monkeypatch.setattr(
+        service,
+        "fetch_from_finviz",
+        lambda exchange_filter=None: [
+            {
+                "symbol": "AAPL",
+                "name": "Apple",
+                "exchange": "NASDAQ",
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+                "market_cap": 3_000_000_000_000.0,
+            },
+        ],
+    )
+
+    stats = service.populate_universe(db)
+
+    row = db.query(StockUniverse).filter(StockUniverse.symbol == "AAPL").one()
+    event = (
+        db.query(StockUniverseStatusEvent)
+        .filter(StockUniverseStatusEvent.symbol == "AAPL")
+        .one()
+    )
+    run = (
+        db.query(StockUniverseReconciliationRun)
+        .filter(
+            StockUniverseReconciliationRun.market == "US",
+            StockUniverseReconciliationRun.source_name == "finviz",
+        )
+        .one()
+    )
+    payload = json.loads(event.payload_json)
+
+    assert stats["pipeline"]["market"] == "US"
+    assert stats["source_name"] == "finviz"
+    assert stats["reconciliation"]["run_id"] == run.id
+    assert stats["deactivated"] == 0
+    assert row.source == "finviz"
+    assert row.status_reason == "Present in Finviz universe sync"
+    assert event.trigger_source == "finviz_sync"
+    assert payload["source_name"] == "finviz"
+    assert payload["source_symbol"] == "AAPL"
+    assert payload["source_metadata"]["exchange_filter"] is None
+    db.close()
+
+
+def test_populate_universe_reconciliation_baseline_is_source_scoped(monkeypatch):
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    service = StockUniverseService()
+    snapshot_ids = iter(["finviz-nasdaq-1", "finviz-full-1"])
+
+    monkeypatch.setattr(service, "_auto_snapshot_id", lambda prefix: next(snapshot_ids))
+
+    def _fetch(exchange_filter=None):
+        if exchange_filter == "NASDAQ":
+            return [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple",
+                    "exchange": "NASDAQ",
+                    "sector": "Technology",
+                    "industry": "Consumer Electronics",
+                    "market_cap": 3_000_000_000_000.0,
+                },
+            ]
+        return [
+            {
+                "symbol": "AAPL",
+                "name": "Apple",
+                "exchange": "NASDAQ",
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+                "market_cap": 3_000_000_000_000.0,
+            },
+            {
+                "symbol": "IBM",
+                "name": "IBM",
+                "exchange": "NYSE",
+                "sector": "Technology",
+                "industry": "Information Technology Services",
+                "market_cap": 180_000_000_000.0,
+            },
+        ]
+
+    monkeypatch.setattr(service, "fetch_from_finviz", _fetch)
+
+    service.populate_universe(db, exchange_filter="NASDAQ")
+    full_stats = service.populate_universe(db)
+
+    assert full_stats["source_name"] == "finviz"
+    assert full_stats["reconciliation"]["previous_snapshot_id"] is None
+    assert full_stats["reconciliation"]["counts"]["total_current"] == 2
+    db.close()
+
+
 def test_ingest_hk_from_csv_rejects_unapproved_source():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()

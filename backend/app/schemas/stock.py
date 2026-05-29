@@ -34,7 +34,7 @@ class StockFundamentals(BaseModel):
     field_completeness_score: Optional[int] = None
     field_provenance: Optional[Dict[str, str]] = None
     # T6 graceful-degrade metadata for ownership/sentiment fields.
-    # Shape: {field_name: {status, reason_code, canonical_provider, support_state}}.
+    # Shape: {field_name: {status, reason_code, support_state}}.
     field_availability: Optional[Dict[str, Dict[str, Any]]] = None
     # T7 cadence metadata for mixed reporting frequencies.
     growth_reporting_cadence: Optional[str] = None

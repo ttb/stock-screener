@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.field_capability_registry import (
+    FieldCapabilityRegistryService,
     FALLBACK_BEHAVIOR_COMPUTED,
     FALLBACK_BEHAVIOR_FALLBACK,
     FALLBACK_BEHAVIOR_POLICY_EXCLUDED,
@@ -20,6 +21,11 @@ from app.services.field_capability_registry import (
     SUPPORT_STATE_SUPPORTED,
     SUPPORT_STATE_UNSUPPORTED,
     field_capability_registry,
+)
+from app.domain.providers.data_plan import (
+    DATASET_FUNDAMENTALS,
+    ProviderDataPlanRegistry,
+    ProviderPlanStep,
 )
 from app.services.fundamentals_completeness import (
     field_source_map,
@@ -81,6 +87,33 @@ def test_registry_is_versioned_and_shape_is_deterministic():
     ]
     assert artifact["field_count"] == len(artifact["fields"])
     assert artifact["field_count"] == len(screening_fields())
+
+
+def test_registry_consumes_injected_provider_plan_registry():
+    provider_plan_registry = ProviderDataPlanRegistry(
+        plans={
+            (MARKET_US, DATASET_FUNDAMENTALS): (
+                ProviderPlanStep(PROVIDER_YFINANCE),
+            ),
+            (MARKET_HK, DATASET_FUNDAMENTALS): (
+                ProviderPlanStep(PROVIDER_FINVIZ),
+                ProviderPlanStep(PROVIDER_YFINANCE),
+            ),
+        },
+        version="test-provider-plan-v1",
+    )
+    service = FieldCapabilityRegistryService(
+        provider_plan_registry=provider_plan_registry,
+        market_order=(MARKET_US, MARKET_HK),
+    )
+
+    artifact = service.artifact()
+    market_cap = _field_map(artifact)["market_cap"]["markets"][MARKET_HK]
+
+    assert artifact["provider_plan_version"] == "test-provider-plan-v1"
+    assert market_cap["policy_provider_chain"] == [PROVIDER_FINVIZ, PROVIDER_YFINANCE]
+    assert market_cap["fallback_behavior"] == FALLBACK_BEHAVIOR_FALLBACK
+    assert market_cap["providers_before_canonical"] == [PROVIDER_FINVIZ]
 
 
 def test_registry_enumerates_all_screening_fields_with_tier_and_source():
@@ -328,3 +361,16 @@ def test_sg_missing_ownership_fields_surface_non_us_gap_reason():
     )
     assert availability["institutional_ownership"]["status"] == SUPPORT_STATE_UNSUPPORTED
     assert availability["institutional_ownership"]["reason_code"] == REASON_CODE_NON_US_GAP
+
+
+def test_runtime_field_availability_omits_provider_execution_details():
+    availability = field_capability_registry.derive_ownership_sentiment_availability(
+        data={},
+        market=MARKET_HK,
+    )
+
+    assert set(availability["institutional_ownership"]) == {
+        "status",
+        "reason_code",
+        "support_state",
+    }

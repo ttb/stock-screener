@@ -43,6 +43,7 @@ from ..domain.universe.ingestion import (
 from .ca_universe_ingestion_adapter import ca_universe_ingestion_adapter
 from .cn_universe_ingestion_adapter import cn_universe_ingestion_adapter
 from .de_universe_ingestion_adapter import de_universe_ingestion_adapter
+from .finviz_universe_ingestion_adapter import finviz_universe_ingestion_adapter
 from .hk_universe_ingestion_adapter import hk_universe_ingestion_adapter
 from .jp_universe_ingestion_adapter import jp_universe_ingestion_adapter
 from .kr_universe_ingestion_adapter import kr_universe_ingestion_adapter
@@ -86,6 +87,7 @@ class StockUniverseService:
         self._ca_ingestion = ca_universe_ingestion_adapter
         self._cn_ingestion = cn_universe_ingestion_adapter
         self._de_ingestion = de_universe_ingestion_adapter
+        self._finviz_ingestion = finviz_universe_ingestion_adapter
         self._hk_ingestion = hk_universe_ingestion_adapter
         self._jp_ingestion = jp_universe_ingestion_adapter
         self._kr_ingestion = kr_universe_ingestion_adapter
@@ -93,6 +95,7 @@ class StockUniverseService:
         self._tw_ingestion = tw_universe_ingestion_adapter
         self._universe_ingestion_pipeline = UniverseIngestionPipeline(
             canonicalizers={
+                "US": self._finviz_ingestion,
                 "HK": FlatUniverseCanonicalizerAdapter(self._hk_ingestion),
                 "JP": FlatUniverseCanonicalizerAdapter(self._jp_ingestion),
                 "KR": FlatUniverseCanonicalizerAdapter(self._kr_ingestion),
@@ -868,6 +871,12 @@ class StockUniverseService:
             if current_run is not None
             else None
         )
+        canonical_list = list(canonical_rows)
+        normalized_source_name = (
+            self._reconciliation_source_name(canonical_list[0])
+            if canonical_list
+            else str(source_name or "").strip().lower().replace("-", "_")
+        )
         previous_run: StockUniverseReconciliationRun | None = None
         if previous_snapshot_id:
             previous_run = (
@@ -892,6 +901,7 @@ class StockUniverseService:
                 db.query(StockUniverseReconciliationRun)
                 .filter(
                     StockUniverseReconciliationRun.market == market,
+                    StockUniverseReconciliationRun.source_name == normalized_source_name,
                     StockUniverseReconciliationRun.snapshot_id != snapshot_id,
                 )
                 .order_by(
@@ -920,12 +930,6 @@ class StockUniverseService:
                         },
                     )
 
-        canonical_list = list(canonical_rows)
-        normalized_source_name = (
-            self._reconciliation_source_name(canonical_list[0])
-            if canonical_list
-            else str(source_name or "").strip().lower().replace("-", "_")
-        )
         current_rows = self._reconciliation_row_payloads(canonical_list)
         artifact = self._build_market_reconciliation_artifact(
             market=market,
@@ -1293,17 +1297,23 @@ class StockUniverseService:
         snapshot_as_of: str | None = None,
         source_metadata: Optional[dict[str, Any]] = None,
         strict: bool = True,
+        trigger_source: str | None = None,
+        row_source: str | None = None,
     ) -> Dict[str, Any]:
-        return self._universe_ingestion_pipeline.ingest_snapshot_rows(
-            db,
-            market=market,
-            rows=rows,
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            snapshot_as_of=snapshot_as_of,
-            source_metadata=source_metadata,
-            strict=strict,
-        )
+        kwargs: dict[str, Any] = {
+            "market": market,
+            "rows": rows,
+            "source_name": source_name,
+            "snapshot_id": snapshot_id,
+            "snapshot_as_of": snapshot_as_of,
+            "source_metadata": source_metadata,
+            "strict": strict,
+        }
+        if trigger_source is not None:
+            kwargs["trigger_source"] = trigger_source
+        if row_source is not None:
+            kwargs["row_source"] = row_source
+        return self._universe_ingestion_pipeline.ingest_snapshot_rows(db, **kwargs)
 
     def _deactivate_india_coverage_rejections(
         self,
@@ -2229,7 +2239,7 @@ class StockUniverseService:
         """
         Populate stock_universe table from finviz.
 
-        Performs upsert: updates existing symbols, inserts new ones, deactivates removed ones.
+        Performs shared upsert/reconciliation using the canonical Universe pipeline.
 
         Args:
             db: Database session
@@ -2246,184 +2256,34 @@ class StockUniverseService:
                 logger.warning("No stocks fetched from finviz")
                 return {'added': 0, 'updated': 0, 'deactivated': 0, 'total': 0}
 
-            now = datetime.utcnow()
-            added_count = 0
-            updated_count = 0
-            new_rows: list[StockUniverse] = []
-            new_events: list[StockUniverseStatusEvent] = []
+            exchange_name = str(exchange_filter or "").strip().upper() or None
+            source_name = (
+                "finviz"
+                if exchange_name is None
+                else f"finviz_{exchange_name.lower()}"
+            )
+            stats = self._ingest_snapshot_rows_via_pipeline(
+                db,
+                market="US",
+                rows=stocks,
+                source_name=source_name,
+                snapshot_id=self._auto_snapshot_id(source_name),
+                source_metadata={"exchange_filter": exchange_name},
+                strict=True,
+                trigger_source="finviz_sync",
+                row_source="finviz",
+            )
+            reconciliation = stats.get("reconciliation") or {}
+            safety = reconciliation.get("safety") or {}
+            stats["deactivated"] = int(safety.get("deactivated_count") or 0)
 
-            existing_stocks = {
-                stock.symbol: stock
-                for stock in db.query(StockUniverse).all()
-            }
-            resolved_rows: list[tuple[dict[str, Any], Any, str, str]] = []
-            fetched_symbols: set[str] = set()
-            for stock_data in stocks:
-                identity = self._resolved_identity(stock_data)
-                source_symbol = stock_data["symbol"]
-                canonical_symbol = identity.canonical_symbol
-                resolved_rows.append((stock_data, identity, source_symbol, canonical_symbol))
-                fetched_symbols.add(canonical_symbol)
-
-            for stock_data, identity, source_symbol, canonical_symbol in resolved_rows:
-                existing = existing_stocks.get(canonical_symbol) or existing_stocks.get(source_symbol)
-                if existing and existing.symbol != canonical_symbol and canonical_symbol not in existing_stocks:
-                    existing_stocks.pop(existing.symbol, None)
-                    existing.symbol = canonical_symbol
-                    existing_stocks[canonical_symbol] = existing
-                if existing is None:
-                    new_rows.append(StockUniverse(
-                        symbol=canonical_symbol,
-                        name=stock_data["name"],
-                        market=identity.market,
-                        exchange=identity.exchange,
-                        currency=identity.currency,
-                        timezone=identity.timezone,
-                        local_code=identity.local_code,
-                        sector=stock_data["sector"],
-                        industry=stock_data["industry"],
-                        market_cap=stock_data["market_cap"],
-                        is_active=True,
-                        status=UNIVERSE_STATUS_ACTIVE,
-                        status_reason="Present in Finviz universe sync",
-                        source="finviz",
-                        consecutive_fetch_failures=0,
-                        added_at=now,
-                        first_seen_at=now,
-                        last_seen_in_source_at=now,
-                        updated_at=now,
-                    ))
-                    new_events.append(self._build_status_event_record(
-                        symbol=canonical_symbol,
-                        old_status=None,
-                        new_status=UNIVERSE_STATUS_ACTIVE,
-                        trigger_source="finviz_sync",
-                        reason="New symbol discovered in Finviz universe sync",
-                        payload={"exchange": stock_data["exchange"]},
-                    ))
-                    added_count += 1
-                    continue
-
-                existing.name = stock_data["name"] or existing.name
-                existing.exchange = identity.exchange or existing.exchange
-                existing.market = identity.market
-                existing.currency = identity.currency
-                existing.timezone = identity.timezone
-                existing.local_code = identity.local_code or existing.local_code
-                existing.sector = stock_data["sector"] or existing.sector
-                existing.industry = stock_data["industry"] or existing.industry
-                existing.market_cap = stock_data["market_cap"]
-                self._apply_status_transition(
-                    db,
-                    existing,
-                    new_status=UNIVERSE_STATUS_ACTIVE,
-                    trigger_source="finviz_sync",
-                    reason="Present in Finviz universe sync",
-                    now=now,
-                    payload={"exchange": stock_data["exchange"]},
-                    source="finviz",
-                    clear_failures=True,
-                    seen_in_source=True,
-                )
-                updated_count += 1
-
-            self._bulk_insert_records(db, new_rows)
-            self._bulk_insert_records(db, new_events)
-
-            # Deactivate symbols that no longer exist in finviz
-            # ONLY when refreshing ALL exchanges (no filter)
-            # When refreshing specific exchange, don't deactivate stocks from other exchanges
-            deactivated_count = 0
-
-            # Safety check: minimum expected stocks from finviz (prevents mass deactivation on API failure)
-            MIN_EXPECTED_STOCKS = 8000  # Finviz typically returns 9000+ US stocks
-            MAX_DEACTIVATION_PERCENT = 10  # Never deactivate more than 10% in one refresh
-
-            if not exchange_filter:
-                # Only deactivate when doing full universe refresh
-                removed_records = [
-                    stock
-                    for stock in existing_stocks.values()
-                    if self._normalize_status(stock) == UNIVERSE_STATUS_ACTIVE
-                    and stock.symbol not in fetched_symbols
-                ]
-
-                if removed_records:
-                    # Safety check: don't deactivate if fetch count is suspiciously low
-                    if len(fetched_symbols) < MIN_EXPECTED_STOCKS:
-                        logger.warning(
-                            f"SAFETY: Skipping deactivation - only {len(fetched_symbols)} stocks fetched "
-                            f"(expected {MIN_EXPECTED_STOCKS}+). Would have deactivated {len(removed_records)} stocks."
-                        )
-                    # Safety check: don't deactivate too many stocks at once
-                    elif len(removed_records) > len(existing_stocks) * MAX_DEACTIVATION_PERCENT / 100:
-                        logger.warning(
-                            f"SAFETY: Skipping deactivation - {len(removed_records)} stocks would be deactivated "
-                            f"(>{MAX_DEACTIVATION_PERCENT}% of {len(existing_stocks)} existing). "
-                            f"This may indicate a finviz API issue."
-                        )
-                    else:
-                        for record in removed_records:
-                            self._apply_status_transition(
-                                db,
-                                record,
-                                new_status=UNIVERSE_STATUS_INACTIVE_MISSING_SOURCE,
-                                trigger_source="finviz_sync",
-                                reason="Missing from Finviz universe sync",
-                                now=now,
-                                payload={"exchange_filter": None},
-                            )
-                        deactivated_count = len(removed_records)
-                        logger.info(f"Deactivated {deactivated_count} stocks no longer in finviz")
-            else:
-                # When refreshing specific exchange, only deactivate stocks from THAT exchange
-                # that are no longer in the fetch results
-                exchange_name = exchange_filter.upper()
-                removed_from_exchange = [
-                    stock
-                    for stock in existing_stocks.values()
-                    if stock.exchange == exchange_name
-                    and self._normalize_status(stock) == UNIVERSE_STATUS_ACTIVE
-                    and stock.symbol not in fetched_symbols
-                ]
-
-                if removed_from_exchange:
-                    # Safety check: don't deactivate too many from a single exchange
-                    existing_exchange_count = sum(
-                        1
-                        for stock in existing_stocks.values()
-                        if stock.exchange == exchange_name and self._normalize_status(stock) == UNIVERSE_STATUS_ACTIVE
-                    )
-                    if existing_exchange_count > 0 and len(removed_from_exchange) > existing_exchange_count * MAX_DEACTIVATION_PERCENT / 100:
-                        logger.warning(
-                            f"SAFETY: Skipping deactivation for {exchange_name} - {len(removed_from_exchange)} stocks "
-                            f"would be deactivated (>{MAX_DEACTIVATION_PERCENT}% of {existing_exchange_count}). "
-                            f"This may indicate a finviz API issue."
-                        )
-                    else:
-                        for record in removed_from_exchange:
-                            self._apply_status_transition(
-                                db,
-                                record,
-                                new_status=UNIVERSE_STATUS_INACTIVE_MISSING_SOURCE,
-                                trigger_source="finviz_sync",
-                                reason=f"Missing from Finviz universe sync for {exchange_name}",
-                                now=now,
-                                payload={"exchange_filter": exchange_name},
-                            )
-                        deactivated_count = len(removed_from_exchange)
-                        logger.info(f"Deactivated {deactivated_count} {exchange_name} stocks no longer in finviz")
-
-            db.commit()
-
-            logger.info(f"Universe populated: {added_count} added, {updated_count} updated, {deactivated_count} deactivated")
-
-            return {
-                'added': added_count,
-                'updated': updated_count,
-                'deactivated': deactivated_count,
-                'total': len(stocks),
-            }
+            logger.info(
+                "Universe populated: %s added, %s updated, %s deactivated",
+                stats["added"],
+                stats["updated"],
+                stats["deactivated"],
+            )
+            return stats
 
         except Exception as e:
             logger.error(f"Error populating universe: {e}", exc_info=True)

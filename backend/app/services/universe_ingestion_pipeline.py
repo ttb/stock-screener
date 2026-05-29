@@ -278,10 +278,12 @@ class UniversePersistence:
         snapshot_id: str,
         result: CanonicalUniverseIngestionResult,
         trigger_source: str,
+        row_source: str | None = None,
         before_reconciliation: UniverseBeforeReconciliationHook | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         now = now or datetime.utcnow()
+        effective_row_source = row_source or trigger_source
         canonical_rows = result.canonical_rows
         canonical_symbols = [row.symbol for row in canonical_rows]
         existing_rows = (
@@ -312,6 +314,7 @@ class UniversePersistence:
                     row=row,
                     now=now,
                     trigger_source=trigger_source,
+                    row_source=effective_row_source,
                     reason=reason,
                     event_payload=event_payload,
                     new_events=new_events,
@@ -323,7 +326,7 @@ class UniversePersistence:
                 self._new_universe_row(
                     row,
                     now=now,
-                    source=trigger_source,
+                    source=effective_row_source,
                     reason=reason,
                 )
             )
@@ -391,6 +394,7 @@ class UniversePersistence:
         row: CanonicalUniverseRow,
         now: datetime,
         trigger_source: str,
+        row_source: str,
         reason: str,
         event_payload: dict[str, Any],
         new_events: list[StockUniverseStatusEvent],
@@ -422,7 +426,7 @@ class UniversePersistence:
             reason=reason,
             now=now,
             payload=event_payload,
-            source=trigger_source,
+            source=row_source,
             clear_failures=row.lifecycle.is_active,
             seen_in_source=row.lifecycle.is_active,
         )
@@ -576,6 +580,8 @@ class UniverseIngestionPipeline:
         snapshot_as_of: str | None = None,
         source_metadata: Mapping[str, Any] | None = None,
         strict: bool = True,
+        trigger_source: str | None = None,
+        row_source: str | None = None,
     ) -> dict[str, Any]:
         market_code = str(market or "").strip().upper()
         canonicalizer = self._canonicalizers.get(market_code)
@@ -596,6 +602,8 @@ class UniverseIngestionPipeline:
             snapshot_id=snapshot_id,
             result=result,
             strict=strict,
+            trigger_source=trigger_source,
+            row_source=row_source,
         )
 
     def ingest_canonicalized_result(
@@ -607,6 +615,8 @@ class UniverseIngestionPipeline:
         snapshot_id: str,
         result: CanonicalUniverseIngestionResult,
         strict: bool = True,
+        trigger_source: str | None = None,
+        row_source: str | None = None,
     ) -> dict[str, Any]:
         market_code = str(market or "").strip().upper()
         blocking_rejections = tuple(row for row in result.rejected_rows if row.strict)
@@ -617,14 +627,15 @@ class UniverseIngestionPipeline:
                 f"row(s). {sample}"
             )
 
-        trigger_source = f"{market_code.lower()}_ingest"
+        effective_trigger_source = trigger_source or f"{market_code.lower()}_ingest"
         persisted = self._persistence.persist(
             db,
             market=market_code,
             source_name=source_name,
             snapshot_id=snapshot_id,
             result=result,
-            trigger_source=trigger_source,
+            trigger_source=effective_trigger_source,
+            row_source=row_source,
             before_reconciliation=self._before_reconciliation_hooks.get(market_code),
         )
         return self._summary(
