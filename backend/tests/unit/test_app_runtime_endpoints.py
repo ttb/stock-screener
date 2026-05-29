@@ -10,6 +10,7 @@ from app.database import get_db
 from app.domain.markets.catalog import get_market_catalog
 from app.domain.scanning.defaults import get_default_scan_profile
 from app.main import app
+from app.schemas.app_runtime import MarketCatalogEntryResponse
 
 
 class _FakeUISnapshotService:
@@ -86,6 +87,22 @@ async def test_app_capabilities_includes_scan_defaults(client, monkeypatch):
     assert market_catalog["US"]["mic_facts"][0]["mic"] == "XNYS"
     assert market_catalog["HK"]["capabilities"]["finviz_screening"] is False
     assert data["api_base_path"] == "/api"
+
+
+def test_market_catalog_runtime_schema_requires_canonical_market_facts():
+    payload = get_market_catalog().get("US").as_runtime_payload()
+    for key in (
+        "primary_mic",
+        "mics",
+        "supported_currencies",
+        "default_currency",
+        "mic_facts",
+    ):
+        missing_payload = dict(payload)
+        missing_payload.pop(key)
+
+        with pytest.raises(ValueError):
+            MarketCatalogEntryResponse(**missing_payload)
 
 
 @pytest.mark.asyncio

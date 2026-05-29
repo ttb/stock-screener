@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional
 
-from ..domain.markets import Market, UnsupportedMarketError, get_market_catalog
+from ..domain.markets.catalog import get_market_catalog
+from ..domain.markets.market import Market, UnsupportedMarketError
 
 
 SUPPORTED_MARKETS: tuple[str, ...] = tuple(

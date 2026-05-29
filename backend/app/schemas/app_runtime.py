@@ -60,11 +60,11 @@ class MarketCatalogEntryResponse(BaseModel):
 
     code: str
     label: str
-    primary_mic: str | None = None
-    mics: list[str] = Field(default_factory=list)
-    supported_currencies: list[str] = Field(default_factory=list)
-    default_currency: str | None = None
-    mic_facts: list[MicFactsResponse] = Field(default_factory=list)
+    primary_mic: str
+    mics: list[str] = Field(min_length=1)
+    supported_currencies: list[str] = Field(min_length=1)
+    default_currency: str
+    mic_facts: list[MicFactsResponse] = Field(min_length=1)
     currency: str
     timezone: str
     calendar_id: str
