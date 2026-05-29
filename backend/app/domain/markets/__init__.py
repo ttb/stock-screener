@@ -9,6 +9,7 @@ from .catalog import (
     get_market_catalog,
 )
 from .market import Market, SUPPORTED_MARKET_CODES, UnsupportedMarketError
+from .mic import MicFacts
 from .registry import MarketProfile, MarketRegistry, market_registry
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "MarketCatalogError",
     "MarketProfile",
     "MarketRegistry",
+    "MicFacts",
     "SUPPORTED_MARKET_CODES",
     "UnsupportedMarketError",
     "get_market_catalog",

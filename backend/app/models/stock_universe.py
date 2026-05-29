@@ -17,6 +17,8 @@ UNIVERSE_STATUS_ACTIVE = "active"
 UNIVERSE_STATUS_INACTIVE_MISSING_SOURCE = "inactive_missing_source"
 UNIVERSE_STATUS_INACTIVE_NO_DATA = "inactive_no_data"
 UNIVERSE_STATUS_INACTIVE_MANUAL = "inactive_manual"
+UNIVERSE_EVENT_STATUS_CHANGED = "status_changed"
+UNIVERSE_EVENT_LISTING_TIER_CHANGED = "listing_tier_changed"
 
 
 class StockUniverse(Base):
@@ -34,6 +36,7 @@ class StockUniverse(Base):
     name = Column(String(255))
     market = Column(String(8), nullable=False, default="US", index=True)  # US, HK, JP, TW
     exchange = Column(String(20), index=True)  # NYSE, NASDAQ, AMEX
+    listing_tier = Column(String(64), nullable=True, index=True)
     currency = Column(String(8), nullable=False, default="USD")
     timezone = Column(String(64), nullable=False, default="America/New_York")
     local_code = Column(String(32), nullable=True)  # Exchange-local identifier when different from symbol
@@ -59,6 +62,12 @@ class StockUniverse(Base):
         Index("idx_universe_sector_active", "sector", "is_active"),
         Index("idx_universe_exchange_status", "exchange", "status"),
         Index("idx_universe_status_active", "status", "is_active"),
+        Index(
+            "idx_universe_market_listing_tier_active",
+            "market",
+            "listing_tier",
+            "is_active",
+        ),
     )
 
     def __repr__(self):
@@ -74,12 +83,18 @@ class StockUniverse(Base):
 
 
 class StockUniverseStatusEvent(Base):
-    """Audit log for universe lifecycle state transitions."""
+    """Audit log for universe lifecycle and metadata state transitions."""
 
     __tablename__ = "stock_universe_status_events"
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(20), nullable=False, index=True)
+    event_type = Column(
+        String(64),
+        nullable=False,
+        default=UNIVERSE_EVENT_STATUS_CHANGED,
+        index=True,
+    )
     old_status = Column(String(32), nullable=True)
     new_status = Column(String(32), nullable=False, index=True)
     trigger_source = Column(String(64), nullable=False)
@@ -90,6 +105,7 @@ class StockUniverseStatusEvent(Base):
     __table_args__ = (
         Index("idx_universe_status_events_symbol_created", "symbol", "created_at"),
         Index("idx_universe_status_events_status_created", "new_status", "created_at"),
+        Index("idx_universe_status_events_type_created", "event_type", "created_at"),
     )
 
 

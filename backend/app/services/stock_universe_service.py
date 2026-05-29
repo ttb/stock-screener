@@ -23,6 +23,7 @@ from ..models.stock_universe import (
     StockUniverseIndexMembership,
     StockUniverseReconciliationRun,
     StockUniverseStatusEvent,
+    UNIVERSE_EVENT_STATUS_CHANGED,
     UNIVERSE_STATUS_ACTIVE,
     UNIVERSE_STATUS_INACTIVE_MANUAL,
     UNIVERSE_STATUS_INACTIVE_MISSING_SOURCE,
@@ -145,6 +146,7 @@ class StockUniverseService:
         trigger_source: str,
         reason: str,
         payload: Optional[Dict[str, Any]] = None,
+        event_type: str = UNIVERSE_EVENT_STATUS_CHANGED,
     ) -> None:
         db.add(
             self._build_status_event_record(
@@ -154,6 +156,7 @@ class StockUniverseService:
                 trigger_source=trigger_source,
                 reason=reason,
                 payload=payload,
+                event_type=event_type,
             )
         )
 
@@ -166,9 +169,11 @@ class StockUniverseService:
         trigger_source: str,
         reason: str,
         payload: Optional[Dict[str, Any]] = None,
+        event_type: str = UNIVERSE_EVENT_STATUS_CHANGED,
     ) -> StockUniverseStatusEvent:
         return StockUniverseStatusEvent(
             symbol=symbol,
+            event_type=event_type,
             old_status=old_status,
             new_status=new_status,
             trigger_source=trigger_source,

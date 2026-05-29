@@ -47,6 +47,19 @@ DOCUMENTED_CATALOG_ALIAS_CODES: dict[str, set[str]] = {
     "SG": {"SGX", "SES"},
 }
 
+DOCUMENTED_CATALOG_CANONICAL_MICS: dict[str, tuple[str, ...]] = {
+    "US": ("XNYS", "XNAS", "XASE"),
+    "HK": ("XHKG",),
+    "IN": ("XNSE", "XBOM"),
+    "JP": ("XTKS",),
+    "KR": ("XKRX",),
+    "TW": ("XTAI",),
+    "CN": ("XSHG", "XSHE", "XBSE"),
+    "CA": ("XTSE", "XTNX"),
+    "DE": ("XETR", "XFRA"),
+    "SG": ("XSES",),
+}
+
 DOCUMENTED_REGISTRY_ONLY_EXCHANGE_ALIASES: dict[str, set[str]] = {
     "US": {"XNYS", "XNAS", "XASE"},
     "CN": {"SHSE", "XBEI"},
@@ -107,6 +120,17 @@ def test_catalog_exchange_codes_are_documented_as_mics_or_compatibility_aliases(
             | DOCUMENTED_CATALOG_ALIAS_CODES.get(code, set())
         )
         assert set(catalog.get(code).exchanges) == documented_codes
+
+
+def test_catalog_canonical_mics_are_documented_and_have_facts() -> None:
+    catalog = get_market_catalog()
+
+    for code in catalog.supported_market_codes():
+        entry = catalog.get(code)
+        assert entry.mics == DOCUMENTED_CATALOG_CANONICAL_MICS[code]
+        assert entry.primary_mic == entry.mics[0]
+        assert {facts.mic for facts in entry.mic_facts} == set(entry.mics)
+        assert entry.default_currency in entry.supported_currencies
 
 
 def test_catalog_and_registry_exchange_alias_drift_is_documented() -> None:
