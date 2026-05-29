@@ -2,6 +2,7 @@
 
 from .data_plan import (
     DATASET_FUNDAMENTALS,
+    DATASET_PRICES,
     PLAN_VERSION,
     PROVIDER_AKSHARE,
     PROVIDER_ALPHAVANTAGE,
@@ -18,6 +19,7 @@ from .data_plan import (
 
 __all__ = [
     "DATASET_FUNDAMENTALS",
+    "DATASET_PRICES",
     "PLAN_VERSION",
     "PROVIDER_AKSHARE",
     "PROVIDER_ALPHAVANTAGE",

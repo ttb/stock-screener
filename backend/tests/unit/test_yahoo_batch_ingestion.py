@@ -9,6 +9,15 @@ import pandas as pd
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
+from app.domain.providers.data_plan import (
+    DATASET_PRICES,
+    PLAN_VERSION,
+    PROVIDER_AKSHARE,
+    PROVIDER_BAOSTOCK,
+    PROVIDER_YFINANCE,
+    ProviderDataPlan,
+    ProviderPlanStep,
+)
 from app.config import settings
 from app.database import Base
 from app.models.stock import StockPrice
@@ -17,6 +26,7 @@ from app.models.stock_universe import (
     UNIVERSE_STATUS_ACTIVE,
     UNIVERSE_STATUS_INACTIVE_NO_DATA,
 )
+import app.services.bulk_data_fetcher as bulk_data_fetcher_module
 from app.services.bulk_data_fetcher import BulkDataFetcher
 from app.services.price_cache_service import PriceCacheService
 from app.services.stock_universe_service import StockUniverseService
@@ -295,6 +305,108 @@ def test_fetch_prices_in_batches_falls_back_to_yahoo_for_krx_misses(monkeypatch)
     assert results["091990.KQ"]["primary_provider_error"] == "KRX returned empty price data"
 
 
+def test_fetch_prices_in_batches_uses_price_plan_registry_for_routing(monkeypatch):
+    fetcher = BulkDataFetcher()
+    plan = ProviderDataPlan(
+        market="KR",
+        dataset=DATASET_PRICES,
+        steps=(ProviderPlanStep(PROVIDER_YFINANCE, batch_size=37),),
+        version="test-plan",
+    )
+
+    class _Registry:
+        def plan_for(self, market, dataset, *, mic=None):
+            assert market == "KR"
+            assert dataset == DATASET_PRICES
+            assert mic is None
+            return plan
+
+    monkeypatch.setattr(
+        bulk_data_fetcher_module,
+        "provider_data_plan_registry",
+        _Registry(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_kr_prices_with_yfinance_fallback",
+        MagicMock(side_effect=AssertionError("routing bypassed the price plan")),
+    )
+
+    calls = []
+
+    def fake_yahoo(symbols, *, period, start_batch_size=None, market=None):
+        calls.append(
+            {
+                "symbols": list(symbols),
+                "period": period,
+                "start_batch_size": start_batch_size,
+                "market": market,
+            }
+        )
+        return {symbol: _success_result(symbol) for symbol in symbols}
+
+    monkeypatch.setattr(fetcher, "_fetch_yfinance_prices_in_batches", fake_yahoo)
+
+    results = fetcher.fetch_prices_in_batches(["005930.KS"], period="7d", market="KR")
+
+    assert calls == [
+        {
+            "symbols": ["005930.KS"],
+            "period": "7d",
+            "start_batch_size": 37,
+            "market": "KR",
+        }
+    ]
+    assert results["005930.KS"]["provider_data_plan"] == plan.provenance_metadata()
+
+
+def test_fetch_prices_in_batches_attaches_price_plan_provenance(monkeypatch):
+    fetcher = BulkDataFetcher()
+
+    def fake_yahoo(symbols, *, period, start_batch_size=None, market=None):
+        return {symbol: _success_result(symbol) for symbol in symbols}
+
+    monkeypatch.setattr(fetcher, "_fetch_yfinance_prices_in_batches", fake_yahoo)
+
+    results = fetcher.fetch_prices_in_batches(["0700.HK"], period="7d", market="HK")
+
+    assert results["0700.HK"]["provider_data_plan"] == {
+        "version": PLAN_VERSION,
+        "dataset": DATASET_PRICES,
+        "market": "HK",
+        "mic": None,
+        "providers": [PROVIDER_YFINANCE],
+    }
+
+
+def test_cn_bjse_price_plan_disables_yahoo_fallback(monkeypatch):
+    fetcher = BulkDataFetcher()
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_cn_price_batch",
+        lambda symbols, *, period: {
+            "920118.BJ": fetcher._build_error_result(
+                "920118.BJ",
+                "CN providers returned empty price data",
+            )
+        },
+    )
+    yahoo_fallback = MagicMock(return_value={})
+    monkeypatch.setattr(fetcher, "_fetch_yfinance_prices_in_batches", yahoo_fallback)
+
+    results = fetcher.fetch_prices_in_batches(["920118.BJ"], period="7d", market="CN")
+
+    yahoo_fallback.assert_not_called()
+    assert results["920118.BJ"]["provider_data_plan"] == {
+        "version": PLAN_VERSION,
+        "dataset": DATASET_PRICES,
+        "market": "CN",
+        "mic": "XBSE",
+        "providers": [PROVIDER_AKSHARE, PROVIDER_BAOSTOCK],
+    }
+
+
 def test_price_cache_fetch_direct_historical_data_prefers_krx_for_korea(monkeypatch):
     service = PriceCacheService(redis_client=None, session_factory=MagicMock())
     price_frame = _price_df(date(2026, 4, 29), 105.0)
@@ -336,7 +448,14 @@ def test_price_cache_bulk_fallback_passes_market_to_batch_fetcher(monkeypatch):
 
     class _FakeFetcher:
         def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            calls.append({"symbols": list(symbols), "period": period, "market": market})
+            calls.append(
+                {
+                    "symbols": list(symbols),
+                    "period": period,
+                    "start_batch_size": start_batch_size,
+                    "market": market,
+                }
+            )
             return {
                 symbol: {"price_data": price_frame, "has_error": False}
                 for symbol in symbols
@@ -353,7 +472,14 @@ def test_price_cache_bulk_fallback_passes_market_to_batch_fetcher(monkeypatch):
         now_et=datetime(2026, 4, 29, 16, 0),
     )
 
-    assert calls == [{"symbols": ["005930.KS"], "period": "7d", "market": "KR"}]
+    assert calls == [
+        {
+            "symbols": ["005930.KS"],
+            "period": "7d",
+            "start_batch_size": None,
+            "market": "KR",
+        }
+    ]
     assert result["005930.KS"] is price_frame
 
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .catalog import MarketCatalogError, get_market_catalog
+from .mic_aliases import mic_alias_registry
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,7 @@ class MarketSymbolSuffixRegistry:
         self._default_by_market: dict[str, str | None] = {}
         self._suffix_by_market_alias: dict[tuple[str, str], str | None] = {}
         self._market_by_suffix: dict[str, str] = {}
+        self._mic_by_suffix: dict[str, str] = {}
 
         catalog = get_market_catalog()
         for definition in self._definitions:
@@ -46,6 +48,11 @@ class MarketSymbolSuffixRegistry:
                         f"{existing_market} and {market}"
                     )
                 self._market_by_suffix[definition.suffix] = market
+                for alias in definition.aliases:
+                    resolved = mic_alias_registry.resolve(market, alias)
+                    if resolved is not None:
+                        self._mic_by_suffix[definition.suffix] = resolved.mic
+                        break
 
             for alias in definition.aliases:
                 normalized_alias = self._normalize_alias(alias)
@@ -79,6 +86,15 @@ class MarketSymbolSuffixRegistry:
         for suffix, market in self.suffix_market_pairs():
             if normalized_symbol.endswith(suffix):
                 return market
+        return None
+
+    def mic_for_symbol(self, symbol: str | None) -> str | None:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return None
+        for suffix, _market in self.suffix_market_pairs():
+            if normalized_symbol.endswith(suffix):
+                return self._mic_by_suffix.get(suffix)
         return None
 
     def suffix_market_pairs(self) -> tuple[tuple[str, str], ...]:

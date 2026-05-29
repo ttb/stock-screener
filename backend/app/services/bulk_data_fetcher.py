@@ -19,6 +19,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 from ..config import settings
+from app.domain.providers.data_plan import (
+    DATASET_PRICES,
+    PROVIDER_AKSHARE,
+    PROVIDER_BAOSTOCK,
+    PROVIDER_KRX,
+    PROVIDER_YFINANCE,
+    ProviderDataPlan,
+    provider_data_plan_registry,
+)
 from .growth_cadence_service import compute_cadence_aware_growth
 
 if TYPE_CHECKING:
@@ -99,6 +108,65 @@ class BulkDataFetcher:
         )
         self._cn_price_service = cn_price_service
         self._krx_price_service = krx_price_service
+
+    @staticmethod
+    def _price_plan(market: Optional[str], *, mic: Optional[str] = None) -> ProviderDataPlan:
+        return provider_data_plan_registry.plan_for(market, DATASET_PRICES, mic=mic)
+
+    def _price_plan_for_symbol(
+        self,
+        symbol: str,
+        market: Optional[str],
+        *,
+        base_plan: ProviderDataPlan | None = None,
+    ) -> ProviderDataPlan:
+        resolved_market = market or (base_plan.market if base_plan is not None else None)
+        mic = None
+        if str(resolved_market or "").strip().upper() == "CN":
+            try:
+                from app.domain.markets.symbol_suffixes import market_symbol_suffix_registry
+                from .security_master_service import security_master_resolver
+
+                mic = market_symbol_suffix_registry.mic_for_symbol(symbol)
+                if mic is None:
+                    identity = security_master_resolver.resolve_identity(
+                        symbol=symbol,
+                        market="CN",
+                    )
+                    mic = identity.mic
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                logger.debug("Could not resolve CN MIC for price plan %s: %s", symbol, exc)
+        if mic is not None:
+            return self._price_plan(resolved_market, mic=mic)
+        return base_plan or self._price_plan(resolved_market)
+
+    @staticmethod
+    def _attach_price_plan_metadata(
+        results: Dict[str, Dict],
+        plan: ProviderDataPlan,
+    ) -> Dict[str, Dict]:
+        metadata = plan.provenance_metadata()
+        for payload in results.values():
+            if isinstance(payload, dict):
+                payload["provider_data_plan"] = metadata
+        return results
+
+    def _attach_price_plan_metadata_by_symbol(
+        self,
+        results: Dict[str, Dict],
+        *,
+        market: Optional[str],
+        base_plan: ProviderDataPlan,
+    ) -> Dict[str, Dict]:
+        for symbol, payload in results.items():
+            if isinstance(payload, dict):
+                plan = self._price_plan_for_symbol(
+                    symbol,
+                    market,
+                    base_plan=base_plan,
+                )
+                payload["provider_data_plan"] = plan.provenance_metadata()
+        return results
 
     @classmethod
     def _get_fallback_rate_limiter(cls) -> "RedisRateLimiter":
@@ -527,39 +595,73 @@ class BulkDataFetcher:
         """Fetch prices for many symbols using market-aware batch routing.
 
         Background jobs should call this method instead of any per-symbol Yahoo path.
-        Korea uses KRX/pykrx first, then falls back to Yahoo for symbols KRX
-        cannot serve. China uses AKShare/BaoStock first, then falls back to
-        Yahoo only for Shanghai/Shenzhen symbols.
+        Provider order, fallback eligibility, and default batch size come from
+        ``ProviderDataPlanRegistry`` for the ``prices`` dataset.
 
         When ``market`` is supplied, per-market rate budget keys
-        (``yfinance:hk`` / ``yfinance:batch:hk``) and per-market batch sizes
-        from RateBudgetPolicy take effect, so cross-market refreshes don't
-        starve each other of provider tokens.
+        (``yfinance:hk`` / ``yfinance:batch:hk``) and backoff schedules still
+        apply, while the plan supplies the default batch size.
         """
         if not symbols:
             return {}
 
-        if str(market or "").strip().upper() == "KR":
-            return self._fetch_kr_prices_with_yfinance_fallback(
-                symbols,
-                period=period,
-                start_batch_size=start_batch_size,
-                market=market,
-            )
-        if str(market or "").strip().upper() == "CN":
-            return self._fetch_cn_prices_with_yfinance_fallback(
-                symbols,
-                period=period,
-                start_batch_size=start_batch_size,
-                market=market,
+        plan = self._price_plan(market)
+        if not plan.providers:
+            results = {
+                symbol: self._build_error_result(
+                    symbol,
+                    f"No price provider plan for market={plan.market!r}",
+                )
+                for symbol in symbols
+            }
+            return self._attach_price_plan_metadata(results, plan)
+
+        for step in plan.steps:
+            if step.provider in {PROVIDER_AKSHARE, PROVIDER_BAOSTOCK}:
+                return self._fetch_cn_prices_with_yfinance_fallback(
+                    symbols,
+                    period=period,
+                    start_batch_size=start_batch_size,
+                    market=market,
+                    plan=plan,
+                )
+            if step.provider == PROVIDER_KRX:
+                return self._fetch_kr_prices_with_yfinance_fallback(
+                    symbols,
+                    period=period,
+                    start_batch_size=start_batch_size,
+                    market=market,
+                    plan=plan,
+                )
+            if step.provider == PROVIDER_YFINANCE:
+                results = self._fetch_yfinance_prices_in_batches(
+                    symbols,
+                    period=period,
+                    start_batch_size=(
+                        start_batch_size
+                        if start_batch_size is not None
+                        else step.batch_size
+                    ),
+                    market=market,
+                )
+                return self._attach_price_plan_metadata(results, plan)
+
+            logger.warning(
+                "Unsupported price provider %r in plan %s/%s version %s",
+                step.provider,
+                plan.market,
+                plan.dataset,
+                plan.version,
             )
 
-        return self._fetch_yfinance_prices_in_batches(
-            symbols,
-            period=period,
-            start_batch_size=start_batch_size,
-            market=market,
-        )
+        results = {
+            symbol: self._build_error_result(
+                symbol,
+                f"No executable price provider in plan for market={plan.market!r}",
+            )
+            for symbol in symbols
+        }
+        return self._attach_price_plan_metadata(results, plan)
 
     def _get_cn_price_service(self):
         if self._cn_price_service is None:
@@ -604,17 +706,27 @@ class BulkDataFetcher:
         period: str,
         start_batch_size: Optional[int] = None,
         market: Optional[str] = None,
+        plan: ProviderDataPlan | None = None,
     ) -> Dict[str, Dict]:
+        plan = plan or self._price_plan(market or "CN")
         cn_results = self._fetch_cn_price_batch(symbols, period=period)
         fallback_symbols = [
             symbol
             for symbol, payload in cn_results.items()
             if (
                 payload.get("has_error") or payload.get("price_data") is None
-            ) and not str(symbol or "").upper().endswith(".BJ")
+            ) and self._price_plan_for_symbol(
+                symbol,
+                market,
+                base_plan=plan,
+            ).allows(PROVIDER_YFINANCE)
         ]
         if not fallback_symbols:
-            return cn_results
+            return self._attach_price_plan_metadata_by_symbol(
+                cn_results,
+                market=market,
+                base_plan=plan,
+            )
 
         logger.info(
             "Falling back to Yahoo for %d/%d CN Shanghai/Shenzhen symbols with missing CN prices",
@@ -624,7 +736,11 @@ class BulkDataFetcher:
         fallback_results = self._fetch_yfinance_prices_in_batches(
             fallback_symbols,
             period=period,
-            start_batch_size=start_batch_size,
+            start_batch_size=(
+                start_batch_size
+                if start_batch_size is not None
+                else plan.step_for(PROVIDER_YFINANCE).batch_size
+            ),
             market=market,
         )
         merged = dict(cn_results)
@@ -640,7 +756,11 @@ class BulkDataFetcher:
             if primary_error:
                 enriched_payload["primary_provider_error"] = primary_error
             merged[symbol] = enriched_payload
-        return merged
+        return self._attach_price_plan_metadata_by_symbol(
+            merged,
+            market=market,
+            base_plan=plan,
+        )
 
     def _fetch_yfinance_prices_in_batches(
         self,
@@ -773,15 +893,17 @@ class BulkDataFetcher:
         period: str,
         start_batch_size: Optional[int] = None,
         market: Optional[str] = None,
+        plan: ProviderDataPlan | None = None,
     ) -> Dict[str, Dict]:
+        plan = plan or self._price_plan(market or "KR")
         krx_results = self._fetch_kr_price_batch(symbols, period=period)
         fallback_symbols = [
             symbol
             for symbol, payload in krx_results.items()
             if payload.get("has_error") or payload.get("price_data") is None
         ]
-        if not fallback_symbols:
-            return krx_results
+        if not fallback_symbols or not plan.allows(PROVIDER_YFINANCE):
+            return self._attach_price_plan_metadata(krx_results, plan)
 
         logger.info(
             "Falling back to Yahoo for %d/%d KR symbols with missing KRX prices",
@@ -791,7 +913,11 @@ class BulkDataFetcher:
         fallback_results = self._fetch_yfinance_prices_in_batches(
             fallback_symbols,
             period=period,
-            start_batch_size=start_batch_size,
+            start_batch_size=(
+                start_batch_size
+                if start_batch_size is not None
+                else plan.step_for(PROVIDER_YFINANCE).batch_size
+            ),
             market=market,
         )
         merged = dict(krx_results)
@@ -807,7 +933,7 @@ class BulkDataFetcher:
             if primary_error:
                 enriched_payload["primary_provider_error"] = primary_error
             merged[symbol] = enriched_payload
-        return merged
+        return self._attach_price_plan_metadata(merged, plan)
 
     def _resolve_price_batch_backoff(self, market: Optional[str]) -> tuple[int, ...]:
         """Return the per-attempt sleep schedule for ``_fetch_price_batch_with_retries``.

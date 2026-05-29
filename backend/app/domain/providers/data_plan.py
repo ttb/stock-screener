@@ -13,6 +13,7 @@ from typing import Mapping
 from app.domain.markets.market import SUPPORTED_MARKET_CODES
 
 DATASET_FUNDAMENTALS = "fundamentals"
+DATASET_PRICES = "prices"
 PLAN_VERSION = "2026.05.29.1"
 
 PROVIDER_AKSHARE = "akshare"
@@ -206,5 +207,28 @@ provider_data_plan_registry = ProviderDataPlanRegistry(
         ("CA", DATASET_FUNDAMENTALS): (_yf(),),
         ("DE", DATASET_FUNDAMENTALS): (_yf(),),
         ("SG", DATASET_FUNDAMENTALS): (_yf(),),
+        ("US", DATASET_PRICES): (_yf(batch_size=150),),
+        ("HK", DATASET_PRICES): (_yf(batch_size=50),),
+        ("IN", DATASET_PRICES): (_yf(batch_size=50),),
+        ("JP", DATASET_PRICES): (_yf(batch_size=50),),
+        ("KR", DATASET_PRICES): (
+            ProviderPlanStep(PROVIDER_KRX, batch_size=200, fallback=False),
+            _yf(batch_size=50),
+        ),
+        ("TW", DATASET_PRICES): (_yf(batch_size=50),),
+        ("CN", DATASET_PRICES): (
+            ProviderPlanStep(PROVIDER_AKSHARE, batch_size=500, fallback=False),
+            ProviderPlanStep(PROVIDER_BAOSTOCK, batch_size=500),
+            _yf(batch_size=25),
+        ),
+        ("CA", DATASET_PRICES): (_yf(batch_size=50),),
+        ("DE", DATASET_PRICES): (_yf(batch_size=50),),
+        ("SG", DATASET_PRICES): (_yf(batch_size=50),),
+    },
+    overrides={
+        ("CN", "XBSE", DATASET_PRICES): (
+            ProviderPlanStep(PROVIDER_AKSHARE, batch_size=500, fallback=False),
+            ProviderPlanStep(PROVIDER_BAOSTOCK, batch_size=500),
+        ),
     },
 )

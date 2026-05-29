@@ -2024,11 +2024,18 @@ class PriceCacheService:
                 market_groups.setdefault(symbol_market, []).append(symbol)
             for group_market, market_symbols in market_groups.items():
                 try:
+                    fetch_kwargs = {"period": period}
+                    if group_market is None:
+                        fetch_kwargs["start_batch_size"] = getattr(
+                            settings,
+                            'price_cache_yfinance_batch_size',
+                            100,
+                        )
+                    else:
+                        fetch_kwargs["market"] = group_market
                     provider_results = bulk_fetcher.fetch_prices_in_batches(
                         market_symbols,
-                        period=period,
-                        start_batch_size=getattr(settings, 'price_cache_yfinance_batch_size', 100),
-                        market=group_market,
+                        **fetch_kwargs,
                     )
                 except TypeError as exc:
                     if "market" not in str(exc):

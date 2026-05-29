@@ -1040,8 +1040,8 @@ def _fetch_with_backoff(
     (60s, 120s, 240s) before giving up.
 
     When ``market`` is supplied, ``fetch_prices_in_batches`` uses the
-    per-market batch size from RateBudgetPolicy instead of the hard-coded
-    default, so the policy-configured batch size actually applies.
+    per-market batch size from ProviderDataPlanRegistry instead of the
+    hard-coded default, so the configured market plan actually applies.
 
     Args:
         bulk_fetcher: BulkDataFetcher instance
@@ -1049,7 +1049,7 @@ def _fetch_with_backoff(
         period: Data period (default "2y")
         max_retries: Maximum retry attempts (default 3)
         market: Optional market scope — when set, defers batch sizing to
-            RateBudgetPolicy (pass None for legacy global behaviour)
+            ProviderDataPlanRegistry (pass None for legacy global behaviour)
 
     Returns:
         Dict of symbol -> data, or empty dict if all retries fail
@@ -1057,8 +1057,8 @@ def _fetch_with_backoff(
     for attempt in range(max_retries):
         try:
             # When market is set, omit start_batch_size so fetch_prices_in_batches
-            # uses the per-market policy batch size. For shared/None runs keep the
-            # hard-coded default to preserve pre-9.1 behaviour.
+            # uses the per-market provider-plan batch size. For shared/None runs
+            # keep the hard-coded default to preserve pre-9.1 behaviour.
             if market is not None:
                 results = bulk_fetcher.fetch_prices_in_batches(
                     symbols,

@@ -24,3 +24,9 @@ def test_symbol_suffix_registry_infers_market_from_symbol_suffix() -> None:
     assert market_symbol_suffix_registry.market_for_symbol("3008.TWO") == "TW"
     assert market_symbol_suffix_registry.market_for_symbol("SAP.DE") == "DE"
     assert market_symbol_suffix_registry.market_for_symbol("AAPL") is None
+
+
+def test_symbol_suffix_registry_infers_mic_from_symbol_suffix() -> None:
+    assert market_symbol_suffix_registry.mic_for_symbol("920118.BJ") == "XBSE"
+    assert market_symbol_suffix_registry.mic_for_symbol("000001.SZ") == "XSHE"
+    assert market_symbol_suffix_registry.mic_for_symbol("AAPL") is None
