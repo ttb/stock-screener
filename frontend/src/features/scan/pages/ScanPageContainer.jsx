@@ -34,18 +34,16 @@ import ScanControlBar from '../components/ScanControlBar';
 import ScanResultsSection from '../components/ScanResultsSection';
 import { useScanFilterPresets } from '../hooks/useScanFilterPresets';
 import {
-  buildRuntimeUniverseSelections,
   buildUniverseDef,
-  getMarketScanBlocker,
   parseLegacyUniverseDefault,
-  resolveUniverseScopeValue,
 } from '../universeSelection';
+import {
+  buildRuntimeUniverseSelections,
+  getMarketScanBlocker,
+  resolveUniverseScopeValue,
+} from '../runtimeUniverseSelections';
 
 const INITIAL_UNIVERSE_SELECTION = parseLegacyUniverseDefault(DEFAULT_SCAN_DEFAULTS.universe);
-
-function buildRefreshConflict(activity, market) {
-  return getMarketScanBlocker(activity, market);
-}
 
 function getMutationErrorMessage(error) {
   if (!error) {
@@ -383,7 +381,7 @@ function ScanPage() {
     [filterOptionsData]
   );
   const refreshConflict = useMemo(
-    () => buildRefreshConflict(runtimeActivityQuery.data, universeMarket),
+    () => getMarketScanBlocker(runtimeActivityQuery.data, universeMarket),
     [runtimeActivityQuery.data, universeMarket]
   );
   const createScanError = useMemo(() => {
@@ -575,8 +573,7 @@ function ScanPage() {
         onUniverseMarketChange={handleUniverseMarketChange}
         onUniverseScopeChange={setUniverseScope}
         universeStats={universeStats}
-        universeMarkets={universeSelections.markets}
-        universeScopesByMarket={universeSelections.scopesByMarket}
+        universeSelections={universeSelections}
         statsLoading={statsLoading}
         selectedScreeners={selectedScreeners}
         onScreenerToggle={handleScreenerToggle}

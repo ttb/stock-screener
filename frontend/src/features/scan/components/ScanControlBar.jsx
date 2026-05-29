@@ -22,6 +22,7 @@ import StopIcon from '@mui/icons-material/Stop';
 import ScanProgress from '../../../components/Scan/ScanProgress';
 import { formatScanDropdownLabel } from '../../../utils/scanLabel';
 import { SCREENER_OPTIONS } from '../constants';
+import { selectRuntimeUniverseOption } from '../runtimeUniverseSelections';
 import { getSelectionCount } from '../universeSelection';
 
 function stockCountLabel(universeMarket, universeScope, universeStats, statsLoading, selectedScopeOption) {
@@ -74,8 +75,7 @@ export default function ScanControlBar({
   onUniverseMarketChange,
   onUniverseScopeChange,
   universeStats,
-  universeMarkets = [],
-  universeScopesByMarket = {},
+  universeSelections = null,
   statsLoading,
   selectedScreeners,
   onScreenerToggle,
@@ -99,9 +99,12 @@ export default function ScanControlBar({
   refreshStaleDataError = null,
 }) {
   const controlsDisabled = createScanPending || scanStatus === 'running';
-  const scopeOptions = universeMarket ? universeScopesByMarket[universeMarket] ?? [] : [];
-  const selectedMarketOption = universeMarkets.find((option) => option.value === universeMarket) ?? null;
-  const selectedScopeOption = scopeOptions.find((option) => option.value === universeScope) ?? null;
+  const universeMarkets = universeSelections?.markets ?? [];
+  const {
+    marketOption: selectedMarketOption,
+    scopeOptions,
+    scopeOption: selectedScopeOption,
+  } = selectRuntimeUniverseOption(universeSelections, universeMarket, universeScope);
   const needsScope = universeMarket && universeMarket !== 'TEST';
   const startDisabled =
     createScanPending
