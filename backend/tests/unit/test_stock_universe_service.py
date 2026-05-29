@@ -130,17 +130,21 @@ def test_official_market_ingest_methods_delegate_to_shared_pipeline(
     )
 
     assert result["pipeline"]["market"] == market
-    assert pipeline.calls == [
-        {
-            "market": market,
-            "rows": [{"symbol": "TEST", "name": "Test"}],
-            "source_name": f"{market.lower()}_reference_bundle",
-            "snapshot_id": f"{market.lower()}-snapshot",
-            "snapshot_as_of": "2026-05-29",
-            "source_metadata": {"fixture": True},
-            "strict": True,
-        }
-    ]
+    assert len(pipeline.calls) == 1
+    call = dict(pipeline.calls[0])
+    ingestion_context = call.pop("ingestion_context")
+    assert call == {
+        "market": market,
+        "rows": [{"symbol": "TEST", "name": "Test"}],
+        "source_name": f"{market.lower()}_reference_bundle",
+        "snapshot_id": f"{market.lower()}-snapshot",
+        "snapshot_as_of": "2026-05-29",
+        "source_metadata": {"fixture": True},
+        "strict": True,
+    }
+    assert ingestion_context.trigger_source == f"{market.lower()}_ingest"
+    assert ingestion_context.row_source == f"{market.lower()}_ingest"
+    assert ingestion_context.reconciliation_policy.name == f"{market.lower()}_market_default"
     db.close()
 
 
@@ -1061,6 +1065,118 @@ def test_populate_universe_reconciliation_baseline_is_source_scoped(monkeypatch)
     assert full_stats["source_name"] == "finviz"
     assert full_stats["reconciliation"]["previous_snapshot_id"] is None
     assert full_stats["reconciliation"]["counts"]["total_current"] == 2
+    db.close()
+
+
+def test_populate_universe_uses_finviz_reconciliation_policy(monkeypatch):
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    service = StockUniverseService()
+    snapshot_ids = iter(["finviz-full-a", "finviz-full-b"])
+    fetches = iter(
+        [
+            [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple",
+                    "exchange": "NASDAQ",
+                    "sector": "Technology",
+                    "industry": "Consumer Electronics",
+                    "market_cap": 3_000_000_000_000.0,
+                },
+                {
+                    "symbol": "IBM",
+                    "name": "IBM",
+                    "exchange": "NYSE",
+                    "sector": "Technology",
+                    "industry": "Information Technology Services",
+                    "market_cap": 180_000_000_000.0,
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft",
+                    "exchange": "NASDAQ",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 2_800_000_000_000.0,
+                },
+            ],
+            [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple",
+                    "exchange": "NASDAQ",
+                    "sector": "Technology",
+                    "industry": "Consumer Electronics",
+                    "market_cap": 3_000_000_000_000.0,
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft",
+                    "exchange": "NASDAQ",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 2_800_000_000_000.0,
+                },
+            ],
+        ]
+    )
+
+    monkeypatch.setenv("ASIA_UNIVERSE_APPLY_DESTRUCTIVE_ENABLED", "false")
+    monkeypatch.setenv("FINVIZ_UNIVERSE_APPLY_DESTRUCTIVE_ENABLED", "true")
+    monkeypatch.setenv("FINVIZ_RECONCILIATION_MIN_COUNT_FULL", "0")
+    monkeypatch.setenv("FINVIZ_RECONCILIATION_MAX_REMOVED_PERCENT", "90")
+    monkeypatch.setattr(service, "_auto_snapshot_id", lambda prefix: next(snapshot_ids))
+    monkeypatch.setattr(service, "fetch_from_finviz", lambda exchange_filter=None: next(fetches))
+
+    service.populate_universe(db)
+    stats = service.populate_universe(db)
+
+    safety = stats["reconciliation"]["safety"]
+    ibm = db.query(StockUniverse).filter(StockUniverse.symbol == "IBM").one()
+
+    assert safety["policy_name"] == "finviz_full"
+    assert safety["thresholds"]["min_count"] == 0
+    assert safety["thresholds"]["max_removed_percent"] == 90.0
+    assert safety["apply_destructive_enabled"] is True
+    assert safety["deactivated_count"] == 1
+    assert safety["deactivated_symbols"] == ["IBM"]
+    assert ibm.status == UNIVERSE_STATUS_INACTIVE_MISSING_SOURCE
+    assert ibm.is_active is False
+    db.close()
+
+
+def test_reconciliation_runs_are_distinct_per_source_for_same_snapshot_id():
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    service = StockUniverseService()
+
+    service.ingest_hk_snapshot_rows(
+        db,
+        rows=[{"symbol": "700", "exchange": "SEHK", "name": "Tencent"}],
+        source_name="hkex_official",
+        snapshot_id="shared-snapshot",
+    )
+    manual_stats = service.ingest_hk_snapshot_rows(
+        db,
+        rows=[{"symbol": "5", "exchange": "SEHK", "name": "HSBC"}],
+        source_name="hk_manual_csv",
+        snapshot_id="shared-snapshot",
+    )
+
+    runs = (
+        db.query(StockUniverseReconciliationRun)
+        .filter(
+            StockUniverseReconciliationRun.market == "HK",
+            StockUniverseReconciliationRun.snapshot_id == "shared-snapshot",
+        )
+        .order_by(StockUniverseReconciliationRun.source_name.asc())
+        .all()
+    )
+
+    assert [run.source_name for run in runs] == ["hk_manual_csv", "hkex_official"]
+    assert manual_stats["reconciliation"]["source_name"] == "hk_manual_csv"
+    assert manual_stats["reconciliation"]["previous_snapshot_id"] is None
     db.close()
 
 

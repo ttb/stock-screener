@@ -162,6 +162,11 @@ class StockUniverseReconciliationRun(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
     __table_args__ = (
-        UniqueConstraint("market", "snapshot_id", name="uq_universe_reconciliation_market_snapshot"),
+        UniqueConstraint(
+            "market",
+            "source_name",
+            "snapshot_id",
+            name="uq_universe_reconciliation_market_source_snapshot",
+        ),
         Index("idx_universe_reconciliation_market_created", "market", "created_at"),
     )

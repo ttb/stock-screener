@@ -116,10 +116,16 @@ class FieldCapabilityRegistryService:
         market_order: Tuple[str, ...] | None = None,
         provider_order: Tuple[str, ...] | None = None,
     ) -> None:
+        self._uses_default_provider_registry = provider_plan_registry is None
         self._provider_plan_registry = provider_plan_registry or provider_data_plan_registry
         self._market_order = tuple(market_order or self.MARKET_ORDER)
         self._provider_supported_fields = self._build_provider_supported_fields()
-        self._provider_order = tuple(provider_order or self._derive_provider_order())
+        if provider_order is not None:
+            self._provider_order = tuple(provider_order)
+        elif self._uses_default_provider_registry and market_order is None:
+            self._provider_order = self.DEFAULT_PROVIDER_ORDER
+        else:
+            self._provider_order = self._derive_provider_order()
 
     @staticmethod
     def _finviz_supported_fields() -> frozenset[str]:
@@ -185,20 +191,16 @@ class FieldCapabilityRegistryService:
         }
 
     def _derive_provider_order(self) -> Tuple[str, ...]:
-        plan_providers: list[str] = []
+        providers: list[str] = []
         for market in self._market_order:
             for provider in self._provider_chain_for_market(market):
-                if provider not in plan_providers:
-                    plan_providers.append(provider)
+                if provider not in providers:
+                    providers.append(provider)
 
-        seen: list[str] = []
-        for provider in self.DEFAULT_PROVIDER_ORDER:
-            if provider not in seen:
-                seen.append(provider)
-        for provider in plan_providers:
-            if provider not in seen:
-                seen.append(provider)
-        return tuple(seen)
+        for provider in field_source_map().values():
+            if provider not in providers:
+                providers.append(provider)
+        return tuple(providers)
 
     def _provider_chain_for_market(self, market: str) -> Tuple[str, ...]:
         return self._provider_plan_registry.plan_for(

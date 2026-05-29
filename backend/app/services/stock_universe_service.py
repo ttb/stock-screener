@@ -33,12 +33,15 @@ from ..models.stock import StockIndustry
 from ..models.ticker_validation import TickerValidationLog
 from ..schemas.universe import IndexName
 from ..config import settings
+from ..domain.markets.mic_aliases import mic_alias_registry
 from ..domain.universe.ingestion import (
     CanonicalUniverseIngestionResult,
     CanonicalUniverseRow,
     RejectedUniverseRow,
     UniverseCoverageRejection,
+    UniverseIngestionContext,
     UniverseIngestionSideEffects,
+    UniverseReconciliationPolicy,
 )
 from .ca_universe_ingestion_adapter import ca_universe_ingestion_adapter
 from .cn_universe_ingestion_adapter import cn_universe_ingestion_adapter
@@ -856,10 +859,17 @@ class StockUniverseService:
         snapshot_id: str,
         canonical_rows: Iterable[Any],
     ) -> dict[str, Any]:
+        canonical_list = list(canonical_rows)
+        normalized_source_name = (
+            self._reconciliation_source_name(canonical_list[0])
+            if canonical_list
+            else str(source_name or "").strip().lower().replace("-", "_")
+        )
         current_run = (
             db.query(StockUniverseReconciliationRun)
             .filter(
                 StockUniverseReconciliationRun.market == market,
+                StockUniverseReconciliationRun.source_name == normalized_source_name,
                 StockUniverseReconciliationRun.snapshot_id == snapshot_id,
             )
             .one_or_none()
@@ -871,18 +881,13 @@ class StockUniverseService:
             if current_run is not None
             else None
         )
-        canonical_list = list(canonical_rows)
-        normalized_source_name = (
-            self._reconciliation_source_name(canonical_list[0])
-            if canonical_list
-            else str(source_name or "").strip().lower().replace("-", "_")
-        )
         previous_run: StockUniverseReconciliationRun | None = None
         if previous_snapshot_id:
             previous_run = (
                 db.query(StockUniverseReconciliationRun)
                 .filter(
                     StockUniverseReconciliationRun.market == market,
+                    StockUniverseReconciliationRun.source_name == normalized_source_name,
                     StockUniverseReconciliationRun.snapshot_id == previous_snapshot_id,
                 )
                 .one_or_none()
@@ -1088,6 +1093,87 @@ class StockUniverseService:
         except ValueError:
             return float(default)
 
+    def _default_reconciliation_policy_for_market(
+        self,
+        market: str,
+    ) -> UniverseReconciliationPolicy:
+        normalized_market = str(market or "").strip().upper()
+        return UniverseReconciliationPolicy(
+            name=f"{normalized_market.lower()}_market_default",
+            min_count=self._min_count_threshold_for_market(normalized_market),
+            max_removed_percent=self._safety_float_setting(
+                field_name="asia_reconciliation_max_removed_percent",
+                env_name="ASIA_RECONCILIATION_MAX_REMOVED_PERCENT",
+                default=25.0,
+            ),
+            anomaly_percent=self._safety_float_setting(
+                field_name="asia_reconciliation_anomaly_percent",
+                env_name="ASIA_RECONCILIATION_ANOMALY_PERCENT",
+                default=35.0,
+            ),
+            apply_destructive_enabled=self._safety_bool_setting(
+                field_name="asia_universe_apply_destructive_enabled",
+                env_name="ASIA_UNIVERSE_APPLY_DESTRUCTIVE_ENABLED",
+                default=False,
+            ),
+            quarantine_enforced=self._safety_bool_setting(
+                field_name="asia_reconciliation_quarantine_enforced",
+                env_name="ASIA_RECONCILIATION_QUARANTINE_ENFORCED",
+                default=True,
+            ),
+        )
+
+    def _finviz_reconciliation_policy(
+        self,
+        exchange_name: str | None,
+    ) -> UniverseReconciliationPolicy:
+        normalized_exchange = str(exchange_name or "").strip().upper() or None
+        exchange_resolution = mic_alias_registry.resolve("US", normalized_exchange)
+        exchange_mic = exchange_resolution.mic if exchange_resolution else None
+        min_count_env = (
+            "FINVIZ_RECONCILIATION_MIN_COUNT_EXCHANGE"
+            if normalized_exchange
+            else "FINVIZ_RECONCILIATION_MIN_COUNT_FULL"
+        )
+        min_count_field = (
+            "finviz_reconciliation_min_count_exchange"
+            if normalized_exchange
+            else "finviz_reconciliation_min_count_full"
+        )
+        return UniverseReconciliationPolicy(
+            name=(
+                f"finviz_{normalized_exchange.lower()}"
+                if normalized_exchange
+                else "finviz_full"
+            ),
+            min_count=self._safety_int_setting(
+                field_name=min_count_field,
+                env_name=min_count_env,
+                default=0 if normalized_exchange else 8000,
+            ),
+            max_removed_percent=self._safety_float_setting(
+                field_name="finviz_reconciliation_max_removed_percent",
+                env_name="FINVIZ_RECONCILIATION_MAX_REMOVED_PERCENT",
+                default=10.0,
+            ),
+            anomaly_percent=self._safety_float_setting(
+                field_name="finviz_reconciliation_anomaly_percent",
+                env_name="FINVIZ_RECONCILIATION_ANOMALY_PERCENT",
+                default=100.0,
+            ),
+            apply_destructive_enabled=self._safety_bool_setting(
+                field_name="finviz_universe_apply_destructive_enabled",
+                env_name="FINVIZ_UNIVERSE_APPLY_DESTRUCTIVE_ENABLED",
+                default=True,
+            ),
+            quarantine_enforced=self._safety_bool_setting(
+                field_name="finviz_reconciliation_quarantine_enforced",
+                env_name="FINVIZ_RECONCILIATION_QUARANTINE_ENFORCED",
+                default=True,
+            ),
+            removal_mics=(exchange_mic,) if exchange_mic else (),
+        )
+
     def _evaluate_reconciliation_safety(
         self,
         *,
@@ -1095,23 +1181,16 @@ class StockUniverseService:
         snapshot_id: str,
         counts: Mapping[str, Any],
         removed_symbols: list[str],
+        policy: UniverseReconciliationPolicy,
     ) -> dict[str, Any]:
         total_current = int(counts.get("total_current") or 0)
         total_previous = int(counts.get("total_previous") or 0)
         removed_count = int(counts.get("removed") or 0)
         changed_count = int(counts.get("changed") or 0)
 
-        min_count_threshold = self._min_count_threshold_for_market(market)
-        max_removed_percent = self._safety_float_setting(
-            field_name="asia_reconciliation_max_removed_percent",
-            env_name="ASIA_RECONCILIATION_MAX_REMOVED_PERCENT",
-            default=25.0,
-        )
-        anomaly_percent_threshold = self._safety_float_setting(
-            field_name="asia_reconciliation_anomaly_percent",
-            env_name="ASIA_RECONCILIATION_ANOMALY_PERCENT",
-            default=35.0,
-        )
+        min_count_threshold = policy.min_count
+        max_removed_percent = policy.max_removed_percent
+        anomaly_percent_threshold = policy.anomaly_percent
 
         removed_percent = (removed_count / total_previous * 100.0) if total_previous > 0 else 0.0
         anomaly_percent = (
@@ -1149,16 +1228,8 @@ class StockUniverseService:
                 }
             )
 
-        apply_destructive_enabled = self._safety_bool_setting(
-            field_name="asia_universe_apply_destructive_enabled",
-            env_name="ASIA_UNIVERSE_APPLY_DESTRUCTIVE_ENABLED",
-            default=False,
-        )
-        quarantine_enforced = self._safety_bool_setting(
-            field_name="asia_reconciliation_quarantine_enforced",
-            env_name="ASIA_RECONCILIATION_QUARANTINE_ENFORCED",
-            default=True,
-        )
+        apply_destructive_enabled = policy.apply_destructive_enabled
+        quarantine_enforced = policy.quarantine_enforced
         quarantined = bool(gate_breaches) and quarantine_enforced
         allow_destructive_apply = apply_destructive_enabled and not quarantined
         destructive_apply_blocked = bool(removed_symbols) and not allow_destructive_apply
@@ -1178,9 +1249,11 @@ class StockUniverseService:
             )
 
         return {
+            "policy_name": policy.name,
             "quarantined": quarantined,
             "apply_destructive_enabled": apply_destructive_enabled,
             "quarantine_enforced": quarantine_enforced,
+            "removal_mics": list(policy.removal_mics),
             "allow_destructive_apply": allow_destructive_apply,
             "destructive_apply_blocked": destructive_apply_blocked,
             "gate_breaches": gate_breaches,
@@ -1205,6 +1278,7 @@ class StockUniverseService:
         market: str,
         snapshot_id: str,
         trigger_source: str,
+        reconciliation_policy: UniverseReconciliationPolicy | None = None,
         reconciliation: Mapping[str, Any],
         now: datetime,
     ) -> dict[str, Any]:
@@ -1230,18 +1304,27 @@ class StockUniverseService:
             snapshot_id=snapshot_id,
             counts=reconciliation.get("counts") or {},
             removed_symbols=removed_symbols_full,
+            policy=(
+                reconciliation_policy
+                or self._default_reconciliation_policy_for_market(market)
+            ),
         )
 
         deactivated_symbols: list[str] = []
         if safety["allow_destructive_apply"] and removed_symbols_full:
-            candidates = (
+            candidates_query = (
                 db.query(StockUniverse)
                 .filter(
                     StockUniverse.market == market,
                     StockUniverse.symbol.in_(removed_symbols_full),
                 )
-                .all()
             )
+            removal_mics = tuple(safety.get("removal_mics") or ())
+            if removal_mics:
+                candidates_query = candidates_query.filter(
+                    StockUniverse.exchange.in_(removal_mics)
+                )
+            candidates = candidates_query.all()
             for record in candidates:
                 if self._normalize_status(record) != UNIVERSE_STATUS_ACTIVE:
                     continue
@@ -1297,23 +1380,25 @@ class StockUniverseService:
         snapshot_as_of: str | None = None,
         source_metadata: Optional[dict[str, Any]] = None,
         strict: bool = True,
-        trigger_source: str | None = None,
-        row_source: str | None = None,
+        ingestion_context: UniverseIngestionContext | None = None,
     ) -> Dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "market": market,
-            "rows": rows,
-            "source_name": source_name,
-            "snapshot_id": snapshot_id,
-            "snapshot_as_of": snapshot_as_of,
-            "source_metadata": source_metadata,
-            "strict": strict,
-        }
-        if trigger_source is not None:
-            kwargs["trigger_source"] = trigger_source
-        if row_source is not None:
-            kwargs["row_source"] = row_source
-        return self._universe_ingestion_pipeline.ingest_snapshot_rows(db, **kwargs)
+        return self._universe_ingestion_pipeline.ingest_snapshot_rows(
+            db,
+            market=market,
+            rows=rows,
+            source_name=source_name,
+            snapshot_id=snapshot_id,
+            snapshot_as_of=snapshot_as_of,
+            source_metadata=source_metadata,
+            strict=strict,
+            ingestion_context=(
+                ingestion_context
+                or UniverseIngestionContext.default_for_market(
+                    market,
+                    reconciliation_policy=self._default_reconciliation_policy_for_market(market),
+                )
+            ),
+        )
 
     def _deactivate_india_coverage_rejections(
         self,
@@ -1436,6 +1521,10 @@ class StockUniverseService:
             snapshot_id=snapshot_id,
             result=result,
             strict=strict,
+            ingestion_context=UniverseIngestionContext.default_for_market(
+                "IN",
+                reconciliation_policy=self._default_reconciliation_policy_for_market("IN"),
+            ),
         )
 
     @staticmethod
@@ -2060,7 +2149,7 @@ class StockUniverseService:
         strict: bool = True,
     ) -> Dict[str, Any]:
         """Ingest SG rows with deterministic canonicalization and lineage metadata."""
-        return self._universe_ingestion_pipeline.ingest_snapshot_rows(
+        return self._ingest_snapshot_rows_via_pipeline(
             db,
             market="SG",
             rows=rows,
@@ -2270,8 +2359,11 @@ class StockUniverseService:
                 snapshot_id=self._auto_snapshot_id(source_name),
                 source_metadata={"exchange_filter": exchange_name},
                 strict=True,
-                trigger_source="finviz_sync",
-                row_source="finviz",
+                ingestion_context=UniverseIngestionContext(
+                    trigger_source="finviz_sync",
+                    row_source="finviz",
+                    reconciliation_policy=self._finviz_reconciliation_policy(exchange_name),
+                ),
             )
             reconciliation = stats.get("reconciliation") or {}
             safety = reconciliation.get("safety") or {}

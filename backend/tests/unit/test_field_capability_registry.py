@@ -111,6 +111,7 @@ def test_registry_consumes_injected_provider_plan_registry():
     market_cap = _field_map(artifact)["market_cap"]["markets"][MARKET_HK]
 
     assert artifact["provider_plan_version"] == "test-provider-plan-v1"
+    assert artifact["providers"] == [PROVIDER_YFINANCE, PROVIDER_FINVIZ, SOURCE_TECHNICALS]
     assert market_cap["policy_provider_chain"] == [PROVIDER_FINVIZ, PROVIDER_YFINANCE]
     assert market_cap["fallback_behavior"] == FALLBACK_BEHAVIOR_FALLBACK
     assert market_cap["providers_before_canonical"] == [PROVIDER_FINVIZ]

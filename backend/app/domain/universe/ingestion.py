@@ -350,6 +350,83 @@ class DuplicateActiveUniverseRowError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class UniverseReconciliationPolicy:
+    """Safety and scope rules for applying reconciliation removals."""
+
+    name: str = "market_default"
+    min_count: int = 0
+    max_removed_percent: float = 25.0
+    anomaly_percent: float = 35.0
+    apply_destructive_enabled: bool = False
+    quarantine_enforced: bool = True
+    removal_mics: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        name = _required_text(self.name, "name").lower().replace("-", "_")
+        min_count = max(0, int(self.min_count or 0))
+        max_removed_percent = float(self.max_removed_percent)
+        anomaly_percent = float(self.anomaly_percent)
+        removal_mics = tuple(
+            sorted(
+                {
+                    mic.strip().upper()
+                    for mic in self.removal_mics
+                    if isinstance(mic, str) and mic.strip()
+                }
+            )
+        )
+
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "min_count", min_count)
+        object.__setattr__(self, "max_removed_percent", max_removed_percent)
+        object.__setattr__(self, "anomaly_percent", anomaly_percent)
+        object.__setattr__(
+            self,
+            "apply_destructive_enabled",
+            bool(self.apply_destructive_enabled),
+        )
+        object.__setattr__(self, "quarantine_enforced", bool(self.quarantine_enforced))
+        object.__setattr__(self, "removal_mics", removal_mics)
+
+
+@dataclass(frozen=True, slots=True)
+class UniverseIngestionContext:
+    """Source-level persistence, audit, and reconciliation context."""
+
+    trigger_source: str
+    row_source: str | None = None
+    reconciliation_policy: UniverseReconciliationPolicy = field(
+        default_factory=UniverseReconciliationPolicy
+    )
+
+    def __post_init__(self) -> None:
+        trigger_source = _required_text(self.trigger_source, "trigger_source")
+        trigger_source = trigger_source.lower().replace("-", "_")
+        row_source = _optional_text(self.row_source, "row_source") or trigger_source
+        row_source = row_source.lower().replace("-", "_")
+        policy = self.reconciliation_policy or UniverseReconciliationPolicy()
+
+        object.__setattr__(self, "trigger_source", trigger_source)
+        object.__setattr__(self, "row_source", row_source)
+        object.__setattr__(self, "reconciliation_policy", policy)
+
+    @classmethod
+    def default_for_market(
+        cls,
+        market: str,
+        *,
+        reconciliation_policy: UniverseReconciliationPolicy | None = None,
+    ) -> "UniverseIngestionContext":
+        market_code = _required_text(market, "market").lower()
+        return cls(
+            trigger_source=f"{market_code}_ingest",
+            reconciliation_policy=(
+                reconciliation_policy or UniverseReconciliationPolicy()
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalUniverseIngestionResult:
     """Canonical ingestion output with active identity invariants enforced."""
 
