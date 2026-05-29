@@ -1551,6 +1551,7 @@ class OfficialMarketUniverseSourceService:
                     "symbol": f"{local_code}.SI",
                     "name": name,
                     "exchange": "XSES",
+                    "listing_tier": board,
                     "sector": "",
                     "industry": "",
                     "market_cap": None,
@@ -1608,6 +1609,7 @@ class OfficialMarketUniverseSourceService:
             symbol = str(record.get("symbol") or "").strip().upper()
             name = str(record.get("name") or "").strip()
             exchange = str(record.get("exchange") or "XSES").strip().upper() or "XSES"
+            listing_tier = str(record.get("listing_tier") or record.get("board") or "").strip().upper()
             isin = str(record.get("isin") or "").strip().upper()
             if not symbol or not name:
                 continue
@@ -1618,6 +1620,7 @@ class OfficialMarketUniverseSourceService:
                     "symbol": symbol,
                     "name": name,
                     "exchange": exchange,
+                    "listing_tier": listing_tier,
                     "sector": "",
                     "industry": "",
                     "market_cap": None,

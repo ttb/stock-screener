@@ -39,15 +39,15 @@ def test_sg_adapter_canonicalizes_sti_constituents_with_metadata():
     assert result.rejected_rows == ()
     by_symbol = {row.symbol: row for row in result.canonical_rows}
     assert set(by_symbol) == {"D05.SI", "O39.SI", "A17U.SI"}
-    assert by_symbol["D05.SI"].exchange == "XSES"
-    assert by_symbol["O39.SI"].exchange == "XSES"  # alias normalized
-    assert by_symbol["A17U.SI"].exchange == "XSES"  # SES alias normalized
+    assert by_symbol["D05.SI"].mic == "XSES"
+    assert by_symbol["O39.SI"].mic == "XSES"  # alias normalized
+    assert by_symbol["A17U.SI"].mic == "XSES"  # SES alias normalized
     assert by_symbol["D05.SI"].currency == "SGD"
     assert by_symbol["D05.SI"].timezone == "Asia/Singapore"
     assert by_symbol["D05.SI"].local_code == "D05"
     assert by_symbol["A17U.SI"].local_code == "A17U"
     assert by_symbol["D05.SI"].market_cap == pytest.approx(95_000_000_000.0)
-    assert by_symbol["D05.SI"].source_metadata["row_counts"] == {"xses": 3}
+    assert by_symbol["D05.SI"].provenance.source_metadata["row_counts"] == {"xses": 3}
 
 
 def test_sg_adapter_suffix_strips_exchange_prefix_in_symbol():

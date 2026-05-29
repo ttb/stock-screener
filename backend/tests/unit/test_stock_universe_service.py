@@ -99,6 +99,7 @@ def test_ingest_sg_snapshot_rows_canonicalizes_sgx_codes():
                 "symbol": "D05",
                 "name": "DBS GROUP HOLDINGS LTD",
                 "exchange": "SGX",
+                "listing_tier": "MAINBOARD",
                 "sector": "Finance",
                 "industry": "Banking",
                 "market_cap": "100.5",
@@ -108,6 +109,7 @@ def test_ingest_sg_snapshot_rows_canonicalizes_sgx_codes():
                 "symbol": "A17U.SI",
                 "name": "CAPITALAND ASCENDAS REIT",
                 "exchange": "XSES",
+                "listing_tier": "CATALIST",
                 "sector": "Real Estate",
                 "industry": "REIT",
             },
@@ -126,6 +128,8 @@ def test_ingest_sg_snapshot_rows_canonicalizes_sgx_codes():
     assert rows[0].currency == "SGD"
     assert rows[0].timezone == "Asia/Singapore"
     assert rows[0].local_code == "A17U"
+    assert rows[0].listing_tier == "catalist"
+    assert rows[1].listing_tier == "mainboard"
     assert rows[1].market_cap == 100.5
     db.close()
 

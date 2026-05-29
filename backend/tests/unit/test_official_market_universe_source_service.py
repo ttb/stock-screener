@@ -1728,6 +1728,7 @@ def test_fetch_sg_snapshot_parses_sgx_api_json(monkeypatch):
     assert dbs["industry"] == ""
     assert dbs["market_cap"] is None
     assert dbs["isin"] == ""
+    assert dbs["listing_tier"] == "MAINBOARD"
     assert snapshot.snapshot_id.startswith("sgx-securities-")
 
 
@@ -1889,6 +1890,10 @@ def test_parse_sg_api_json_drops_non_equity_boards():
     rows = OfficialMarketUniverseSourceService._parse_sg_api_json(payload)
     # MAINBOARD, CATALIST, and missing board (permissive) all survive.
     assert {r["symbol"] for r in rows} == {"D05.SI", "5E2.SI", "YYY.SI"}
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["D05.SI"]["listing_tier"] == "MAINBOARD"
+    assert by_symbol["5E2.SI"]["listing_tier"] == "CATALIST"
+    assert by_symbol["YYY.SI"]["listing_tier"] == ""
 
 
 def test_sg_is_excluded_instrument_matches_trust_at_word_boundary():

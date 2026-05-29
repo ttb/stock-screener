@@ -26,6 +26,17 @@ from .transient_database import raise_if_transient_database_error
 logger = logging.getLogger(__name__)
 
 _OFFICIAL_SOURCE_MARKETS = frozenset({"HK", "IN", "JP", "KR", "TW", "CN", "CA", "DE", "SG"})
+_OFFICIAL_UNIVERSE_INGEST_METHODS = {
+    "HK": "ingest_hk_snapshot_rows",
+    "IN": "ingest_in_snapshot_rows",
+    "JP": "ingest_jp_snapshot_rows",
+    "KR": "ingest_kr_snapshot_rows",
+    "TW": "ingest_tw_snapshot_rows",
+    "CN": "ingest_cn_snapshot_rows",
+    "CA": "ingest_ca_snapshot_rows",
+    "DE": "ingest_de_snapshot_rows",
+    "SG": "ingest_sg_snapshot_rows",
+}
 _GITHUB_SYNC_SUCCESS_STATUSES = frozenset({"success", "up_to_date"})
 _OFFICIAL_UNIVERSE_LOCK_RETRY_BASE_SECONDS = 300
 _OFFICIAL_UNIVERSE_LOCK_RETRY_MAX_SECONDS = 1800
@@ -126,88 +137,21 @@ def _ingest_official_snapshot(snapshot: Any) -> dict[str, Any]:
     db = SessionLocal()
     try:
         stock_universe_service = get_stock_universe_service()
-        if snapshot.market == "HK":
-            return stock_universe_service.ingest_hk_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
+        market = str(snapshot.market or "").strip().upper()
+        method_name = _OFFICIAL_UNIVERSE_INGEST_METHODS.get(market)
+        if method_name is None:
+            raise ValueError(
+                f"Unsupported official universe snapshot market {snapshot.market!r}"
             )
-        if snapshot.market == "IN":
-            return stock_universe_service.ingest_in_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
-            )
-        if snapshot.market == "JP":
-            return stock_universe_service.ingest_jp_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
-            )
-        if snapshot.market == "KR":
-            return stock_universe_service.ingest_kr_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
-            )
-        if snapshot.market == "TW":
-            return stock_universe_service.ingest_tw_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
-            )
-        if snapshot.market == "CN":
-            return stock_universe_service.ingest_cn_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
-            )
-        if snapshot.market == "CA":
-            return stock_universe_service.ingest_ca_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
-            )
-        if snapshot.market == "DE":
-            return stock_universe_service.ingest_de_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
-            )
-        if snapshot.market == "SG":
-            return stock_universe_service.ingest_sg_snapshot_rows(
-                db,
-                rows=snapshot.rows,
-                source_name=snapshot.source_name,
-                snapshot_id=snapshot.snapshot_id,
-                snapshot_as_of=snapshot.snapshot_as_of,
-                source_metadata=snapshot.source_metadata,
-            )
-        raise ValueError(f"Unsupported official universe snapshot market {snapshot.market!r}")
+        ingest_snapshot = getattr(stock_universe_service, method_name)
+        return ingest_snapshot(
+            db,
+            rows=snapshot.rows,
+            source_name=snapshot.source_name,
+            snapshot_id=snapshot.snapshot_id,
+            snapshot_as_of=snapshot.snapshot_as_of,
+            source_metadata=snapshot.source_metadata,
+        )
     finally:
         db.close()
 

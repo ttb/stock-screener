@@ -9,12 +9,18 @@ deterministic row per canonical symbol.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import hashlib
 import json
 import re
 from typing import Any, Iterable, Mapping
 
+from ..domain.universe.ingestion import (
+    CanonicalUniverseIngestionResult,
+    CanonicalUniverseRow,
+    RejectedUniverseRow,
+    UniverseSourceProvenance,
+)
 from .security_master_service import security_master_resolver
 
 _SG_EXCHANGE_ALIASES: dict[str, str] = {
@@ -40,45 +46,9 @@ _APPROVED_SG_SOURCES: frozenset[str] = frozenset(
 _SG_LOCAL_CODE_RE = re.compile(r"^[A-Z0-9]{1,8}$")
 
 
-@dataclass(frozen=True)
-class SGCanonicalUniverseRow:
-    """Canonical SG row emitted by the ingestion adapter."""
-
-    symbol: str
-    name: str
-    market: str
-    exchange: str
-    currency: str
-    timezone: str
-    local_code: str
-    sector: str
-    industry: str
-    market_cap: float | None
-    source_name: str
-    source_symbol: str
-    source_row_number: int
-    snapshot_id: str
-    snapshot_as_of: str | None
-    source_metadata: dict[str, Any]
-    lineage_hash: str
-    row_hash: str
-
-
-@dataclass(frozen=True)
-class SGRejectedUniverseRow:
-    """Rejected SG row with reason."""
-
-    source_row_number: int
-    source_symbol: str
-    reason: str
-
-
-@dataclass(frozen=True)
-class SGCanonicalizationResult:
-    """Canonicalization output, split into accepted and rejected rows."""
-
-    canonical_rows: tuple[SGCanonicalUniverseRow, ...]
-    rejected_rows: tuple[SGRejectedUniverseRow, ...]
+SGCanonicalUniverseRow = CanonicalUniverseRow
+SGRejectedUniverseRow = RejectedUniverseRow
+SGCanonicalizationResult = CanonicalUniverseIngestionResult
 
 
 class SGUniverseIngestionAdapter:
@@ -167,7 +137,8 @@ class SGUniverseIngestionAdapter:
 
     @staticmethod
     def _selection_key(row: SGCanonicalUniverseRow) -> tuple[str, int]:
-        return (row.source_symbol, row.source_row_number)
+        row_number = row.provenance.source_row_number or 0
+        return (row.provenance.source_symbol, row_number)
 
     @staticmethod
     def _prefer_text(primary: str, fallback: str) -> str:
@@ -185,14 +156,14 @@ class SGUniverseIngestionAdapter:
         return {
             "symbol": row.symbol,
             "market": row.market,
-            "exchange": row.exchange,
+            "exchange": row.mic,
             "local_code": row.local_code,
             "name": name,
             "sector": sector,
             "industry": industry,
             "market_cap": market_cap,
-            "source_name": row.source_name,
-            "snapshot_id": row.snapshot_id,
+            "source_name": row.provenance.source_name,
+            "snapshot_id": row.provenance.snapshot_id,
         }
 
     def _merge_duplicate_rows(
@@ -212,7 +183,9 @@ class SGUniverseIngestionAdapter:
         merged_industry = self._prefer_text(primary.industry, secondary.industry)
         merged_market_cap = primary.market_cap if primary.market_cap is not None else secondary.market_cap
         merged_source_metadata = (
-            primary.source_metadata if primary.source_metadata else secondary.source_metadata
+            primary.provenance.source_metadata
+            if primary.provenance.source_metadata
+            else secondary.provenance.source_metadata
         )
         merged_row_hash = self._hash_payload(
             self._canonical_payload(
@@ -223,14 +196,18 @@ class SGUniverseIngestionAdapter:
                 market_cap=merged_market_cap,
             )
         )
+        merged_provenance = replace(
+            primary.provenance,
+            source_metadata=merged_source_metadata,
+            row_hash=merged_row_hash,
+        )
         return replace(
             primary,
             name=merged_name,
             sector=merged_sector,
             industry=merged_industry,
             market_cap=merged_market_cap,
-            source_metadata=merged_source_metadata,
-            row_hash=merged_row_hash,
+            provenance=merged_provenance,
         )
 
     def canonicalize_rows(
@@ -288,6 +265,7 @@ class SGUniverseIngestionAdapter:
                 row_market_cap = self._parse_market_cap(
                     raw_row.get("market_cap") or raw_row.get("marketcap")
                 )
+                row_listing_tier = raw_row.get("listing_tier") or raw_row.get("board")
 
                 lineage_payload = {
                     "source_name": normalized_source_name,
@@ -309,25 +287,28 @@ class SGUniverseIngestionAdapter:
                     "source_name": normalized_source_name,
                     "snapshot_id": normalized_snapshot_id,
                 }
-                canonical_row = SGCanonicalUniverseRow(
+                canonical_row = CanonicalUniverseRow(
                     symbol=identity.canonical_symbol,
                     name=row_name,
                     market=identity.market,
-                    exchange=canonical_exchange,
+                    mic=canonical_exchange,
                     currency=identity.currency,
                     timezone=identity.timezone,
                     local_code=identity.local_code,
+                    listing_tier=row_listing_tier,
                     sector=row_sector,
                     industry=row_industry,
                     market_cap=row_market_cap,
-                    source_name=normalized_source_name,
-                    source_symbol=source_symbol,
-                    source_row_number=index,
-                    snapshot_id=normalized_snapshot_id,
-                    snapshot_as_of=snapshot_as_of,
-                    source_metadata=metadata,
-                    lineage_hash=self._hash_payload(lineage_payload),
-                    row_hash=self._hash_payload(canonical_payload),
+                    provenance=UniverseSourceProvenance(
+                        source_name=normalized_source_name,
+                        source_symbol=source_symbol,
+                        source_row_number=index,
+                        snapshot_id=normalized_snapshot_id,
+                        snapshot_as_of=snapshot_as_of,
+                        source_metadata=metadata,
+                        lineage_hash=self._hash_payload(lineage_payload),
+                        row_hash=self._hash_payload(canonical_payload),
+                    ),
                 )
 
                 existing = canonical_by_symbol.get(canonical_row.symbol)
@@ -340,7 +321,7 @@ class SGUniverseIngestionAdapter:
                     )
             except ValueError as exc:
                 rejected_rows.append(
-                    SGRejectedUniverseRow(
+                    RejectedUniverseRow(
                         source_row_number=index,
                         source_symbol=source_symbol,
                         reason=str(exc),
@@ -353,7 +334,7 @@ class SGUniverseIngestionAdapter:
         rejected_rows_tuple = tuple(
             sorted(rejected_rows, key=lambda row: row.source_row_number)
         )
-        return SGCanonicalizationResult(
+        return CanonicalUniverseIngestionResult(
             canonical_rows=canonical_rows,
             rejected_rows=rejected_rows_tuple,
         )

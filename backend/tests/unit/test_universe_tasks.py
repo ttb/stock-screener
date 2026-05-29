@@ -361,3 +361,9 @@ def test_ingest_official_snapshot_handles_every_allowlisted_market(monkeypatch, 
     result = module._ingest_official_snapshot(snapshot)
     assert result["added"] == 0
     assert ingest_calls == [f"ingest_{market.lower()}_snapshot_rows"]
+
+
+def test_official_snapshot_dispatch_registry_matches_allowlisted_markets():
+    import app.tasks.universe_tasks as module
+
+    assert set(module._OFFICIAL_UNIVERSE_INGEST_METHODS) == module._OFFICIAL_SOURCE_MARKETS

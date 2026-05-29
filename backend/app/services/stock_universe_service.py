@@ -42,6 +42,7 @@ from .kr_universe_ingestion_adapter import kr_universe_ingestion_adapter
 from .security_master_service import security_master_resolver
 from .sg_universe_ingestion_adapter import sg_universe_ingestion_adapter
 from .tw_universe_ingestion_adapter import tw_universe_ingestion_adapter
+from .universe_ingestion_pipeline import UniverseIngestionPipeline, UniversePersistence
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,10 @@ class StockUniverseService:
         self._kr_ingestion = kr_universe_ingestion_adapter
         self._sg_ingestion = sg_universe_ingestion_adapter
         self._tw_ingestion = tw_universe_ingestion_adapter
+        self._universe_ingestion_pipeline = UniverseIngestionPipeline(
+            canonicalizers={"SG": self._sg_ingestion},
+            persistence=UniversePersistence.for_stock_universe_service(self),
+        )
         self._bulk_fetcher = None
 
     @staticmethod
@@ -693,7 +698,7 @@ class StockUniverseService:
             "symbol": row.symbol,
             "name": row.name,
             "market": row.market,
-            "exchange": row.exchange,
+            "exchange": getattr(row, "exchange", None) or getattr(row, "mic", None),
             "currency": row.currency,
             "timezone": row.timezone,
             "local_code": row.local_code,
@@ -860,7 +865,7 @@ class StockUniverseService:
 
         canonical_list = list(canonical_rows)
         normalized_source_name = (
-            canonical_list[0].source_name
+            self._canonical_row_source_name(canonical_list[0])
             if canonical_list
             else str(source_name or "").strip().lower().replace("-", "_")
         )
@@ -937,6 +942,16 @@ class StockUniverseService:
             "removed_symbols_truncated": len(removed_symbols) > details_limit,
             "changed_symbols_truncated": len(changed_symbols) > details_limit,
         }
+
+    @staticmethod
+    def _canonical_row_source_name(row: Any) -> str:
+        flat_source_name = getattr(row, "source_name", None)
+        if flat_source_name:
+            return str(flat_source_name)
+        provenance = getattr(row, "provenance", None)
+        if provenance is not None:
+            return str(provenance.source_name)
+        return ""
 
     @staticmethod
     def _min_count_threshold_for_market(market: str) -> int:
@@ -3080,165 +3095,16 @@ class StockUniverseService:
         strict: bool = True,
     ) -> Dict[str, Any]:
         """Ingest SG rows with deterministic canonicalization and lineage metadata."""
-        canonicalized = self._sg_ingestion.canonicalize_rows(
-            rows,
+        return self._universe_ingestion_pipeline.ingest_snapshot_rows(
+            db,
+            market="SG",
+            rows=rows,
             source_name=source_name,
             snapshot_id=snapshot_id,
             snapshot_as_of=snapshot_as_of,
             source_metadata=source_metadata,
+            strict=strict,
         )
-
-        if strict and canonicalized.rejected_rows:
-            sample = "; ".join(
-                f"row {row.source_row_number}: {row.reason}"
-                for row in canonicalized.rejected_rows[:3]
-            )
-            raise ValueError(
-                f"SG ingestion rejected {len(canonicalized.rejected_rows)} row(s). {sample}"
-            )
-
-        now = datetime.utcnow()
-        canonical_symbols = [row.symbol for row in canonicalized.canonical_rows]
-        existing_rows = {
-            row.symbol: row
-            for row in db.query(StockUniverse).filter(
-                StockUniverse.symbol.in_(canonical_symbols)
-            ).all()
-        } if canonical_symbols else {}
-
-        added_count = 0
-        updated_count = 0
-        new_rows: list[StockUniverse] = []
-        new_events: list[StockUniverseStatusEvent] = []
-
-        for row in canonicalized.canonical_rows:
-            event_payload = {
-                "source_name": row.source_name,
-                "source_symbol": row.source_symbol,
-                "source_row_number": row.source_row_number,
-                "snapshot_id": row.snapshot_id,
-                "snapshot_as_of": row.snapshot_as_of,
-                "source_metadata": row.source_metadata,
-                "lineage_hash": row.lineage_hash,
-                "row_hash": row.row_hash,
-            }
-            reason = f"Present in SG source snapshot {row.snapshot_id}"
-            existing = existing_rows.get(row.symbol)
-
-            if existing is not None:
-                existing.name = row.name or existing.name
-                existing.market = row.market
-                existing.exchange = row.exchange
-                existing.currency = row.currency
-                existing.timezone = row.timezone
-                existing.local_code = row.local_code or existing.local_code
-                existing.sector = row.sector or existing.sector
-                existing.industry = row.industry or existing.industry
-                if row.market_cap is not None:
-                    existing.market_cap = row.market_cap
-                self._apply_status_transition(
-                    db,
-                    existing,
-                    new_status=UNIVERSE_STATUS_ACTIVE,
-                    trigger_source="sg_ingest",
-                    reason=reason,
-                    now=now,
-                    payload=event_payload,
-                    source="sg_ingest",
-                    clear_failures=True,
-                    seen_in_source=True,
-                )
-                updated_count += 1
-                continue
-
-            new_rows.append(
-                StockUniverse(
-                    symbol=row.symbol,
-                    name=row.name,
-                    market=row.market,
-                    exchange=row.exchange,
-                    currency=row.currency,
-                    timezone=row.timezone,
-                    local_code=row.local_code,
-                    sector=row.sector,
-                    industry=row.industry,
-                    market_cap=row.market_cap,
-                    is_active=True,
-                    status=UNIVERSE_STATUS_ACTIVE,
-                    status_reason=reason,
-                    source="sg_ingest",
-                    consecutive_fetch_failures=0,
-                    added_at=now,
-                    first_seen_at=now,
-                    last_seen_in_source_at=now,
-                    updated_at=now,
-                )
-            )
-            new_events.append(
-                self._build_status_event_record(
-                    symbol=row.symbol,
-                    old_status=None,
-                    new_status=UNIVERSE_STATUS_ACTIVE,
-                    trigger_source="sg_ingest",
-                    reason=reason,
-                    payload=event_payload,
-                )
-            )
-            added_count += 1
-
-        self._bulk_insert_records(db, new_rows)
-        self._bulk_insert_records(db, new_events)
-
-        reconciliation = self._record_market_reconciliation_run(
-            db,
-            market="SG",
-            source_name=source_name,
-            snapshot_id=snapshot_id,
-            canonical_rows=canonicalized.canonical_rows,
-        )
-        reconciliation = self._apply_market_reconciliation_policy(
-            db,
-            market="SG",
-            snapshot_id=snapshot_id,
-            trigger_source="sg_ingest",
-            reconciliation=reconciliation,
-            now=now,
-        )
-        db.commit()
-        details_limit = 25
-        canonical_preview = canonicalized.canonical_rows[:details_limit]
-        rejected_preview = canonicalized.rejected_rows[:details_limit]
-
-        return {
-            "added": added_count,
-            "updated": updated_count,
-            "total": len(canonicalized.canonical_rows),
-            "rejected": len(canonicalized.rejected_rows),
-            "source_name": source_name,
-            "snapshot_id": snapshot_id,
-            "canonical_rows": [
-                {
-                    "symbol": row.symbol,
-                    "local_code": row.local_code,
-                    "exchange": row.exchange,
-                    "source_symbol": row.source_symbol,
-                    "lineage_hash": row.lineage_hash,
-                    "row_hash": row.row_hash,
-                }
-                for row in canonical_preview
-            ],
-            "rejected_rows": [
-                {
-                    "source_row_number": row.source_row_number,
-                    "source_symbol": row.source_symbol,
-                    "reason": row.reason,
-                }
-                for row in rejected_preview
-            ],
-            "canonical_rows_truncated": len(canonicalized.canonical_rows) > details_limit,
-            "rejected_rows_truncated": len(canonicalized.rejected_rows) > details_limit,
-            "reconciliation": reconciliation,
-        }
 
     def populate_from_csv(self, db: Session, csv_content: str) -> Dict:
         """
