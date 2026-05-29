@@ -17,6 +17,7 @@ from ..domain.universe.ingestion import (
     UniverseIngestionContext,
     UniverseIngestionSideEffects,
     UniverseLifecycleMetadata,
+    UniverseReconciliationPolicy,
     UniverseSourceProvenance,
 )
 from ..models.stock_universe import (
@@ -214,6 +215,7 @@ class StockUniversePersistenceService(Protocol):
         market: str,
         snapshot_id: str,
         trigger_source: str,
+        reconciliation_policy: UniverseReconciliationPolicy | None = None,
         reconciliation: Mapping[str, Any],
         now: datetime,
     ) -> dict[str, Any]:

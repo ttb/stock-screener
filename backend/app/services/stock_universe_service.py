@@ -2500,7 +2500,11 @@ class StockUniverseService:
                     query = query.filter(StockUniverse.market == normalized_market)
 
             if exchange:
-                query = query.filter(StockUniverse.exchange == exchange.upper())
+                query = query.filter(
+                    StockUniverse.exchange.in_(
+                        self._exchange_filter_values(market, exchange)
+                    )
+                )
 
             if listing_tier:
                 query = query.filter(StockUniverse.listing_tier == listing_tier)
@@ -2533,6 +2537,31 @@ class StockUniverseService:
         except Exception as e:
             logger.error(f"Error getting active symbols: {e}", exc_info=True)
             return []
+
+    @staticmethod
+    def _exchange_filter_values(
+        market: Optional[str],
+        exchange: str,
+    ) -> tuple[str, ...]:
+        requested = str(exchange or "").strip().upper()
+        if not requested:
+            return ()
+
+        market_code = str(market or "").strip().upper() or None
+        resolved = (
+            mic_alias_registry.resolve(market_code, requested)
+            if market_code
+            else mic_alias_registry.resolve_global(requested)
+        )
+        if resolved is None:
+            return (requested,)
+
+        values = (
+            *mic_alias_registry.aliases_for_mic(resolved.market, resolved.mic),
+            requested,
+            resolved.mic,
+        )
+        return tuple(dict.fromkeys(value for value in values if value))
 
     def add_manual_symbol(self, db: Session, symbol: str, name: str = "") -> bool:
         """

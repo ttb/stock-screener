@@ -169,4 +169,10 @@ class StockUniverseReconciliationRun(Base):
             name="uq_universe_reconciliation_market_source_snapshot",
         ),
         Index("idx_universe_reconciliation_market_created", "market", "created_at"),
+        Index(
+            "idx_universe_reconciliation_market_source_created",
+            "market",
+            "source_name",
+            "created_at",
+        ),
     )

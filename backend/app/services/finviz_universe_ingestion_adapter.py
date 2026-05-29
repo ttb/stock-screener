@@ -125,6 +125,7 @@ class FinvizUniverseIngestionAdapter:
                         source_name=normalized_source_name,
                         snapshot_id=normalized_snapshot_id,
                         snapshot_as_of=snapshot_as_of,
+                        strict=False,
                     )
                 )
                 continue
@@ -211,6 +212,7 @@ class FinvizUniverseIngestionAdapter:
                         source_name=normalized_source_name,
                         snapshot_id=normalized_snapshot_id,
                         snapshot_as_of=snapshot_as_of,
+                        strict=False,
                     )
                 )
 

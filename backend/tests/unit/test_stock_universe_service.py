@@ -361,6 +361,43 @@ def test_get_active_symbols_market_filter_falls_back_to_exchange_when_market_bla
     db.close()
 
 
+def test_get_active_symbols_mic_filter_matches_legacy_exchange_alias_rows():
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    db.add_all(
+        [
+            StockUniverse(
+                symbol="IBM",
+                exchange="NYSE",
+                market="US",
+                market_cap=500,
+                is_active=True,
+                status=UNIVERSE_STATUS_ACTIVE,
+                status_reason="Present in Finviz universe sync",
+            ),
+            StockUniverse(
+                symbol="AAPL",
+                exchange="XNAS",
+                market="US",
+                market_cap=1000,
+                is_active=True,
+                status=UNIVERSE_STATUS_ACTIVE,
+                status_reason="Present in Finviz universe sync",
+            ),
+        ]
+    )
+    db.commit()
+
+    symbols = stock_universe_service.get_active_symbols(
+        db,
+        market="US",
+        exchange="XNYS",
+    )
+
+    assert symbols == ["IBM"]
+    db.close()
+
+
 def test_populate_from_csv_sets_market_identity_fields_from_resolver():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()
@@ -1016,6 +1053,39 @@ def test_populate_universe_uses_shared_pipeline_with_finviz_source_semantics(mon
     assert payload["source_name"] == "finviz"
     assert payload["source_symbol"] == "AAPL"
     assert payload["source_metadata"]["exchange_filter"] is None
+    db.close()
+
+
+def test_populate_universe_keeps_snapshot_when_finviz_has_bad_rows(monkeypatch):
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    service = StockUniverseService()
+    monkeypatch.setattr(
+        service,
+        "fetch_from_finviz",
+        lambda exchange_filter=None: [
+            {
+                "symbol": "AAPL",
+                "name": "Apple",
+                "exchange": "NASDAQ",
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+                "market_cap": 3_000_000_000_000.0,
+            },
+            {
+                "symbol": "",
+                "name": "Malformed",
+                "exchange": "NASDAQ",
+            },
+        ],
+    )
+
+    stats = service.populate_universe(db)
+
+    assert stats["added"] == 1
+    assert stats["rejected"] == 1
+    assert stats["rejected_rows"][0]["reason"] == "Missing symbol/ticker"
+    assert db.query(StockUniverse).filter(StockUniverse.symbol == "AAPL").one()
     db.close()
 
 

@@ -107,6 +107,52 @@ class TestEnrichmentComputesUSDColumns:
         assert result["adv_usd"] == 6_400_000
         assert result["fx_metadata"]["from_currency"] == "HKD"
 
+    def test_bulk_database_fallback_preserves_persisted_fx_snapshot(self):
+        session_factory = _make_sqlite_session_factory()
+        db = session_factory()
+        db.add(
+            StockUniverse(
+                symbol="0700.HK",
+                market="HK",
+                exchange="XHKG",
+                currency="HKD",
+                timezone="Asia/Hong_Kong",
+                is_active=True,
+                status=UNIVERSE_STATUS_ACTIVE,
+            )
+        )
+        db.add(
+            StockFundamental(
+                symbol="0700.HK",
+                market_cap=1_000_000_000,
+                shares_outstanding=10_000_000,
+                avg_volume=500_000,
+                market_cap_usd=128_000_000,
+                adv_usd=6_400_000,
+                fx_metadata={
+                    "from_currency": "HKD",
+                    "to_currency": "USD",
+                    "rate": 0.128,
+                    "as_of_date": "2026-04-12",
+                    "source": "persisted",
+                },
+            )
+        )
+        db.commit()
+        db.close()
+
+        service = FundamentalsCacheService(
+            redis_client=None,
+            session_factory=session_factory,
+            fx_service=_make_fx({"HKD": 0.2}),
+        )
+
+        result = service.get_many(["0700.HK"], market="HK")["0700.HK"]
+
+        assert result["market_cap_usd"] == 128_000_000
+        assert result["adv_usd"] == 6_400_000
+        assert result["fx_metadata"]["rate"] == 0.128
+
     def test_row_currency_wins_over_market_default(self, captured_record):
         fake_db, captured = captured_record
         fx = _make_fx({"NOK": 0.095, "EUR": 1.08})

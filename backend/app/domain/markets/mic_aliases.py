@@ -89,6 +89,17 @@ class MicAliasRegistry:
             if not market_code or scoped_market == market_code
         )
 
+    def aliases_for_mic(self, market: str | None, mic: str | None) -> tuple[str, ...]:
+        market_code = str(market or "").strip().upper()
+        mic_code = str(mic or "").strip().upper()
+        if not market_code or not mic_code:
+            return ()
+        return tuple(
+            alias
+            for (scoped_market, alias), resolution in self._by_market_alias.items()
+            if scoped_market == market_code and resolution.mic == mic_code
+        )
+
     def is_ambiguous(self, alias: str | None) -> bool:
         normalized_alias = self._normalize_alias(alias)
         if not normalized_alias:

@@ -36,3 +36,7 @@ def test_mic_alias_registry_accepts_canonical_mic_as_alias() -> None:
     assert resolved is not None
     assert resolved.market == "IN"
     assert resolved.mic == "XBOM"
+
+
+def test_mic_alias_registry_lists_canonical_and_legacy_aliases_for_mic() -> None:
+    assert mic_alias_registry.aliases_for_mic("US", "XNYS") == ("XNYS", "NYSE")

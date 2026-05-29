@@ -1357,6 +1357,13 @@ class FundamentalsCacheService:
                     "technicals_refreshed_at": (
                         record.technicals_refreshed_at.isoformat() if record.technicals_refreshed_at else None
                     ),
+                    # T2 quality metadata
+                    "field_completeness_score": record.field_completeness_score,
+                    "field_provenance": record.field_provenance,
+                    # T3 FX normalisation
+                    "market_cap_usd": record.market_cap_usd,
+                    "adv_usd": record.adv_usd,
+                    "fx_metadata": record.fx_metadata,
                 }
 
                 # Compute fallback description
