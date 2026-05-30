@@ -137,7 +137,7 @@ class TestBatchSize:
         # US bumped to 150 in steady-crunching-candle: Yahoo accepts up to
         # MAX_PRICE_BATCH_SIZE (200) and the adaptive shrink halves on
         # transient failure. Non-US markets stay at 50 (smaller universes).
-        ("US", 150), ("HK", 50), ("IN", 50), ("JP", 50), ("KR", 50), ("TW", 50), ("CN", 25),
+        ("US", 150), ("HK", 50), ("IN", 50), ("JP", 50), ("KR", 50), ("TW", 50), ("CN", 25), ("AU", 50),
     ])
     def test_default_batch_sizes(self, market, expected_default):
         with patch("app.services.rate_budget_policy.settings") as mock_settings:
@@ -158,11 +158,32 @@ class TestBackoffParams:
         with patch("app.services.rate_budget_policy.settings") as mock_settings:
             mock_settings.yfinance_backoff_max_s_us = None
             mock_settings.yfinance_backoff_max_s_hk = None
+            mock_settings.yfinance_backoff_max_s_au = None
             policy = RateBudgetPolicy()
             us = policy.get_backoff_params("yfinance", "US")
             hk = policy.get_backoff_params("yfinance", "HK")
+            au = policy.get_backoff_params("yfinance", "AU")
         assert us["max_s"] == 480
         assert hk["max_s"] == 600  # non-US gets longer cap
+        assert au["max_s"] == 600
+
+    def test_au_rate_budget_defaults_match_yfinance_peer_markets(self):
+        with patch("app.services.rate_budget_policy.settings") as mock_settings:
+            mock_settings.configure_mock(
+                yfinance_batch_size_au=None,
+                finviz_batch_size_au=None,
+                yfinance_workers_au=None,
+                finviz_workers_au=None,
+                yfinance_backoff_max_s_au=None,
+                finviz_backoff_max_s_au=None,
+            )
+            policy = RateBudgetPolicy(redis_client_factory=lambda: None)
+            assert policy.get_batch_size("yfinance", "AU") == 50
+            assert policy.get_batch_size("finviz", "AU") == 50
+            assert policy.get_provider_workers("yfinance", "AU") == 1
+            assert policy.get_provider_workers("finviz", "AU") == 2
+            assert policy.get_backoff_params("yfinance", "AU")["max_s"] == 600
+            assert policy.get_backoff_params("finviz", "AU")["max_s"] == 480
 
     def test_us_base_s_preserves_legacy_30_60_120_schedule(self):
         """US base_s=30 keeps the legacy ``30/60/120`` retry schedule used by

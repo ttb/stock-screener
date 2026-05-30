@@ -45,6 +45,16 @@ def test_default_fundamentals_plan_records_provenance_metadata() -> None:
     }
 
 
+def test_au_provider_plan_uses_yfinance_only() -> None:
+    fundamentals = provider_data_plan_registry.plan_for("AU", DATASET_FUNDAMENTALS)
+    prices = provider_data_plan_registry.plan_for("AU", DATASET_PRICES)
+
+    assert fundamentals.providers == (PROVIDER_YFINANCE,)
+    assert fundamentals.step_for(PROVIDER_YFINANCE).batch_size == 50
+    assert prices.providers == (PROVIDER_YFINANCE,)
+    assert prices.step_for(PROVIDER_YFINANCE).batch_size == 50
+
+
 def test_registry_applies_market_mic_dataset_override() -> None:
     registry = ProviderDataPlanRegistry(
         plans={

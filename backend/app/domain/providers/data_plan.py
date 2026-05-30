@@ -14,7 +14,7 @@ from app.domain.markets.market import SUPPORTED_MARKET_CODES
 
 DATASET_FUNDAMENTALS = "fundamentals"
 DATASET_PRICES = "prices"
-PLAN_VERSION = "2026.05.29.1"
+PLAN_VERSION = "2026.05.30.1"
 
 PROVIDER_AKSHARE = "akshare"
 PROVIDER_ALPHAVANTAGE = "alphavantage"
@@ -212,6 +212,7 @@ provider_data_plan_registry = ProviderDataPlanRegistry(
         ("DE", DATASET_FUNDAMENTALS): (_yf(),),
         ("SG", DATASET_FUNDAMENTALS): (_yf(),),
         ("MY", DATASET_FUNDAMENTALS): (_yf(),),
+        ("AU", DATASET_FUNDAMENTALS): (_yf(),),
         ("US", DATASET_PRICES): (_yf(batch_size=150),),
         ("HK", DATASET_PRICES): (_yf(batch_size=50),),
         ("IN", DATASET_PRICES): (_yf(batch_size=50),),
@@ -230,6 +231,7 @@ provider_data_plan_registry = ProviderDataPlanRegistry(
         ("DE", DATASET_PRICES): (_yf(batch_size=50),),
         ("SG", DATASET_PRICES): (_yf(batch_size=50),),
         ("MY", DATASET_PRICES): (_yf(batch_size=50),),
+        ("AU", DATASET_PRICES): (_yf(batch_size=50),),
     },
     overrides={
         ("CN", "XBSE", DATASET_FUNDAMENTALS): (

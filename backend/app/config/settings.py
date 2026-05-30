@@ -252,6 +252,7 @@ class Settings(BaseSettings):
     yfinance_rate_limit_cn: float | None = None
     yfinance_rate_limit_sg: float | None = None
     yfinance_rate_limit_my: float | None = None
+    yfinance_rate_limit_au: float | None = None
     finviz_rate_limit_us: float | None = None
     finviz_rate_limit_hk: float | None = None
     finviz_rate_limit_in: float | None = None
@@ -261,6 +262,7 @@ class Settings(BaseSettings):
     finviz_rate_limit_cn: float | None = None
     finviz_rate_limit_sg: float | None = None
     finviz_rate_limit_my: float | None = None
+    finviz_rate_limit_au: float | None = None
 
     # Per-market batch sizes for yfinance bulk downloads. Defaults ship via
     # RateBudgetPolicy._DEFAULT_BATCH_SIZE and may be overridden per market.
@@ -273,6 +275,7 @@ class Settings(BaseSettings):
     yfinance_batch_size_cn: int | None = None
     yfinance_batch_size_sg: int | None = None
     yfinance_batch_size_my: int | None = None
+    yfinance_batch_size_au: int | None = None
 
     # Per-market batch interval overrides for the ``yfinance:batch`` provider key.
     # Values are in requests-per-second for that market specifically; the
@@ -289,6 +292,7 @@ class Settings(BaseSettings):
     yfinance_batch_rate_limit_cn: float | None = None
     yfinance_batch_rate_limit_sg: float | None = None
     yfinance_batch_rate_limit_my: float | None = None
+    yfinance_batch_rate_limit_au: float | None = None
 
     # Per-market backoff cap (seconds) for consecutive 429-driven backoffs.
     # Defaults in RateBudgetPolicy._DEFAULT_BACKOFF.
@@ -301,6 +305,7 @@ class Settings(BaseSettings):
     yfinance_backoff_max_s_cn: int | None = None
     yfinance_backoff_max_s_sg: int | None = None
     yfinance_backoff_max_s_my: int | None = None
+    yfinance_backoff_max_s_au: int | None = None
 
     # Per-market parallel worker counts for finviz (which has no batch API,
     # so concurrency is the only knob). Defaults live in
@@ -316,6 +321,7 @@ class Settings(BaseSettings):
     finviz_workers_cn: int | None = None
     finviz_workers_sg: int | None = None
     finviz_workers_my: int | None = None
+    finviz_workers_au: int | None = None
 
     # Provider circuit breaker (services/provider_circuit_breaker.py).
     # Trips when N consecutive batches/calls hit transient 429-style errors;
@@ -426,6 +432,8 @@ class Settings(BaseSettings):
     # contending with two same-timezone exchanges at the same cron tick.
     cache_warm_hour_my: int = 5
     cache_warm_minute_my: int = 30
+    cache_warm_hour_au: int = 7
+    cache_warm_minute_au: int = 0
 
     # Enabled markets — subset of SUPPORTED_MARKETS. Lets ops disable a market
     # entirely (beat schedule skips it; its worker can be stopped).
@@ -533,7 +541,7 @@ class Settings(BaseSettings):
         'cache_warm_hour_us', 'cache_warm_hour_hk', 'cache_warm_hour_in',
         'cache_warm_hour_jp', 'cache_warm_hour_kr', 'cache_warm_hour_tw',
         'cache_warm_hour_cn', 'cache_warm_hour_ca', 'cache_warm_hour_de',
-        'cache_warm_hour_sg', 'cache_warm_hour_my'
+        'cache_warm_hour_sg', 'cache_warm_hour_my', 'cache_warm_hour_au'
     )
     @classmethod
     def validate_per_market_hour(cls, v: int) -> int:
@@ -545,7 +553,7 @@ class Settings(BaseSettings):
         'cache_warm_minute_us', 'cache_warm_minute_hk', 'cache_warm_minute_in',
         'cache_warm_minute_jp', 'cache_warm_minute_kr', 'cache_warm_minute_tw',
         'cache_warm_minute_cn', 'cache_warm_minute_ca', 'cache_warm_minute_de',
-        'cache_warm_minute_sg', 'cache_warm_minute_my'
+        'cache_warm_minute_sg', 'cache_warm_minute_my', 'cache_warm_minute_au'
     )
     @classmethod
     def validate_per_market_minute(cls, v: int) -> int:
