@@ -59,7 +59,7 @@ class AUUniverseIngestionAdapter:
         normalized = cls.normalize_source_name(source_name)
         if normalized in _APPROVED_AU_SOURCES:
             return True
-        return normalized.startswith("asx_") or normalized.startswith("au_")
+        return normalized.startswith("asx_")
 
     @staticmethod
     def _normalize_source_symbol(raw_symbol: Any) -> str:
@@ -144,12 +144,14 @@ class AUUniverseIngestionAdapter:
         sector: str,
         industry: str,
         market_cap: float | None,
+        listing_tier: str | None,
     ) -> dict[str, Any]:
         return {
             "symbol": row.symbol,
             "market": row.market,
             "exchange": row.mic,
             "local_code": row.local_code,
+            "listing_tier": listing_tier,
             "name": name,
             "sector": sector,
             "industry": industry,
@@ -176,6 +178,7 @@ class AUUniverseIngestionAdapter:
         merged_market_cap = (
             primary.market_cap if primary.market_cap is not None else secondary.market_cap
         )
+        merged_listing_tier = primary.listing_tier or secondary.listing_tier
         merged_source_metadata = (
             primary.provenance.source_metadata
             if primary.provenance.source_metadata
@@ -188,6 +191,7 @@ class AUUniverseIngestionAdapter:
                 sector=merged_sector,
                 industry=merged_industry,
                 market_cap=merged_market_cap,
+                listing_tier=merged_listing_tier,
             )
         )
         merged_provenance = replace(
@@ -201,6 +205,7 @@ class AUUniverseIngestionAdapter:
             sector=merged_sector,
             industry=merged_industry,
             market_cap=merged_market_cap,
+            listing_tier=merged_listing_tier,
             provenance=merged_provenance,
         )
 
@@ -271,18 +276,6 @@ class AUUniverseIngestionAdapter:
                     "canonical_symbol": identity.canonical_symbol,
                 }
                 canonical_exchange = identity.exchange or "XASX"
-                canonical_payload = {
-                    "symbol": identity.canonical_symbol,
-                    "market": identity.market,
-                    "exchange": canonical_exchange,
-                    "local_code": identity.local_code,
-                    "name": row_name,
-                    "sector": row_sector,
-                    "industry": row_industry,
-                    "market_cap": row_market_cap,
-                    "source_name": normalized_source_name,
-                    "snapshot_id": normalized_snapshot_id,
-                }
                 canonical_row = CanonicalUniverseRow(
                     symbol=identity.canonical_symbol,
                     name=row_name,
@@ -303,8 +296,21 @@ class AUUniverseIngestionAdapter:
                         snapshot_as_of=snapshot_as_of,
                         source_metadata=metadata,
                         lineage_hash=self._hash_payload(lineage_payload),
-                        row_hash=self._hash_payload(canonical_payload),
                     ),
+                )
+                row_hash = self._hash_payload(
+                    self._canonical_payload(
+                        canonical_row,
+                        name=canonical_row.name,
+                        sector=canonical_row.sector,
+                        industry=canonical_row.industry,
+                        market_cap=canonical_row.market_cap,
+                        listing_tier=canonical_row.listing_tier,
+                    )
+                )
+                canonical_row = replace(
+                    canonical_row,
+                    provenance=replace(canonical_row.provenance, row_hash=row_hash),
                 )
 
                 existing = canonical_by_symbol.get(canonical_row.symbol)

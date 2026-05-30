@@ -106,7 +106,12 @@ def test_au_adapter_deduplicates_deterministically_and_backfills_name():
     result = au_universe_ingestion_adapter.canonicalize_rows(
         [
             {"symbol": "BHP", "name": "", "exchange": "XASX"},
-            {"symbol": "BHP.AX", "name": "BHP Group", "exchange": "XASX"},
+            {
+                "symbol": "BHP.AX",
+                "name": "BHP Group",
+                "exchange": "XASX",
+                "board": "Main",
+            },
         ],
         source_name="asx_official",
         snapshot_id="asx-2026-05-15",
@@ -117,6 +122,32 @@ def test_au_adapter_deduplicates_deterministically_and_backfills_name():
     canonical = result.canonical_rows[0]
     assert canonical.symbol == "BHP.AX"
     assert canonical.name == "BHP Group"
+    assert canonical.listing_tier == "main"
+
+
+def test_au_adapter_row_hash_includes_listing_tier():
+    base_result = au_universe_ingestion_adapter.canonicalize_rows(
+        [{"symbol": "BHP", "name": "BHP Group", "exchange": "ASX"}],
+        source_name="asx_official",
+        snapshot_id="asx-2026-05-15",
+    )
+    tiered_result = au_universe_ingestion_adapter.canonicalize_rows(
+        [
+            {
+                "symbol": "BHP",
+                "name": "BHP Group",
+                "exchange": "ASX",
+                "board": "Main",
+            }
+        ],
+        source_name="asx_official",
+        snapshot_id="asx-2026-05-15",
+    )
+
+    base_row = base_result.canonical_rows[0]
+    tiered_row = tiered_result.canonical_rows[0]
+    assert tiered_row.listing_tier == "main"
+    assert base_row.provenance.row_hash != tiered_row.provenance.row_hash
 
 
 def test_au_adapter_rejects_unapproved_source():
@@ -124,6 +155,13 @@ def test_au_adapter_rejects_unapproved_source():
         au_universe_ingestion_adapter.canonicalize_rows(
             [{"symbol": "BHP.AX", "name": "BHP"}],
             source_name="random_third_party",
+            snapshot_id="asx-2026-05-15",
+        )
+
+    with pytest.raises(ValueError, match="Unapproved AU source"):
+        au_universe_ingestion_adapter.canonicalize_rows(
+            [{"symbol": "BHP.AX", "name": "BHP"}],
+            source_name="au_random_vendor",
             snapshot_id="asx-2026-05-15",
         )
 
