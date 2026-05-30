@@ -757,6 +757,7 @@ class Settings(BaseSettings):
             "DE": (self.cache_warm_hour_de, self.cache_warm_minute_de),
             "SG": (self.cache_warm_hour_sg, self.cache_warm_minute_sg),
             "MY": (self.cache_warm_hour_my, self.cache_warm_minute_my),
+            "AU": (self.cache_warm_hour_au, self.cache_warm_minute_au),
         }
         if m not in mapping:
             raise ValueError(f"No cache warm schedule for market {market!r}")

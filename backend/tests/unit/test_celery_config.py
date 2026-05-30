@@ -208,6 +208,11 @@ class TestSettingsValidators:
             "TW": (2, 0),
         }
 
+    def test_australia_cache_warm_schedule_uses_default_au_knobs(self):
+        settings = self._make_settings()
+
+        assert settings.cache_warm_schedule_for("AU") == (7, 0)
+
     @pytest.mark.parametrize(
         ("field_name", "value"),
         [
