@@ -37,6 +37,13 @@ def test_static_workflow_legacy_weekly_reference_manifest_is_us_only():
     assert "No market-scoped weekly reference manifest found" in content
 
 
+def test_static_workflow_fails_fast_when_weekly_reference_assets_cannot_be_listed():
+    content = (_PROJECT_ROOT / ".github/workflows/static-site.yml").read_text(encoding="utf-8")
+
+    assert 'if ! ASSET_NAMES="$(retry_list_assets)"; then' in content
+    assert "Failed to list weekly-reference release assets" in content
+
+
 def test_local_celery_startup_derives_market_workers_from_backend_topology():
     content = (_PROJECT_ROOT / "backend" / "start_celery.sh").read_text(encoding="utf-8")
 

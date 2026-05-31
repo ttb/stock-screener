@@ -2780,7 +2780,7 @@ class StockUniverseService:
 
         The payload is designed for ops visibility and launch-gate checks:
         - counts by market + normalized lifecycle status
-        - latest reconciliation snapshot age/diff summary (HK/JP/TW)
+        - latest reconciliation snapshot age/diff summary for official universe markets
         - stale/missing/quarantine check lists
         """
         now = datetime.utcnow()
@@ -2797,7 +2797,9 @@ class StockUniverseService:
             1,
         )
         stale_after_seconds = stale_after_hours * 3600
-        reconciliation_markets = {"HK", "IN", "JP", "KR", "TW", "CN", "CA", "DE", "SG", "MY"}
+        reconciliation_markets = set(
+            _MARKET_CATALOG.market_codes_with_capability("official_universe")
+        )
 
         by_market: Dict[str, Dict[str, Any]] = {
             market: {
@@ -2807,7 +2809,7 @@ class StockUniverseService:
                 "latest_seen_in_source_at": None,
                 "latest_snapshot": None,
             }
-            for market in ("US", "HK", "IN", "JP", "KR", "TW", "CN", "CA", "DE", "SG", "MY")
+            for market in _MARKET_CATALOG.supported_market_codes()
         }
 
         universe_rows = db.query(

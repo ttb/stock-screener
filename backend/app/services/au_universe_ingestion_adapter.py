@@ -123,6 +123,11 @@ class AUUniverseIngestionAdapter:
             return None
 
     @staticmethod
+    def _normalize_listing_tier_value(raw_value: Any) -> str | None:
+        normalized = str(raw_value or "").strip().lower()
+        return normalized or None
+
+    @staticmethod
     def _hash_payload(payload: Mapping[str, Any]) -> str:
         encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
@@ -266,7 +271,9 @@ class AUUniverseIngestionAdapter:
                 row_market_cap = self._parse_market_cap(
                     raw_row.get("market_cap") or raw_row.get("marketcap")
                 )
-                row_listing_tier = raw_row.get("listing_tier") or raw_row.get("board")
+                row_listing_tier = self._normalize_listing_tier_value(
+                    raw_row.get("listing_tier") or raw_row.get("board")
+                )
 
                 lineage_payload = {
                     "source_name": normalized_source_name,

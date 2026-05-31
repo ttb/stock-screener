@@ -2203,6 +2203,7 @@ def test_get_market_audit_reports_by_market_counts_freshness_and_diff_summary(mo
     jp = audit["by_market"]["JP"]
     tw = audit["by_market"]["TW"]
     us = audit["by_market"]["US"]
+    au = audit["by_market"]["AU"]
 
     assert hk["counts"]["total"] == 2
     assert hk["counts"]["active"] == 1
@@ -2217,6 +2218,8 @@ def test_get_market_audit_reports_by_market_counts_freshness_and_diff_summary(mo
     assert tw["latest_snapshot"]["safety"]["quarantined"] is True
     assert us["snapshot_supported"] is False
     assert us["latest_snapshot"] is None
+    assert au["snapshot_supported"] is True
+    assert au["latest_snapshot"] is None
     assert audit["checks"]["stale_after_hours"] == 1
     assert set(audit["checks"]["stale_markets"]) == {"HK", "IN", "JP"}
     assert audit["checks"]["missing_snapshot_markets"] == ["IN", "JP"]

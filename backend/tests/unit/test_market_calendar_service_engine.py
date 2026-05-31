@@ -36,5 +36,5 @@ def test_last_completed_session_on_sunday_returns_previous_friday():
     service = MarketCalendarService()
     sunday_utc = datetime.fromisoformat("2026-04-12T12:00:00+00:00")
 
-    for market in ("US", "HK", "JP", "TW", "SG"):
+    for market in ("US", "HK", "JP", "TW", "SG", "AU"):
         assert service.last_completed_trading_day(market, now=sunday_utc) == date(2026, 4, 10)

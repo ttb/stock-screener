@@ -254,5 +254,5 @@ class ASXOfficialUniverseSource:
             return None
         try:
             return parsedate_to_datetime(header_value).astimezone(UTC).date()
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             return None
