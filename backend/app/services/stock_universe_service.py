@@ -33,6 +33,7 @@ from ..models.stock import StockIndustry
 from ..models.ticker_validation import TickerValidationLog
 from ..schemas.universe import IndexName
 from ..config import settings
+from ..domain.markets.catalog import get_market_catalog
 from ..domain.markets.mic_aliases import mic_alias_registry
 from ..domain.universe.ingestion import (
     CanonicalUniverseIngestionResult,
@@ -64,17 +65,10 @@ from .universe_ingestion_pipeline import (
 
 logger = logging.getLogger(__name__)
 
+_MARKET_CATALOG = get_market_catalog()
 MARKET_EXCHANGE_FALLBACKS: dict[str, tuple[str, ...]] = {
-    "US": ("NYSE", "NASDAQ", "AMEX"),
-    "HK": ("HKEX", "SEHK", "XHKG"),
-    "IN": ("NSE", "XNSE", "BSE", "XBOM"),
-    "JP": ("TSE", "JPX", "XTKS"),
-    "KR": ("KOSPI", "KOSDAQ", "XKRX"),
-    "TW": ("TWSE", "TPEX", "XTAI"),
-    "CN": ("SSE", "SZSE", "BJSE", "XSHG"),
-    "CA": ("TSX", "TSXV", "XTSE", "XTNX"),
-    "SG": ("SGX", "SES", "XSES"),
-    "MY": ("KLSE", "MYX", "XKLS", "BURSA"),
+    code: _MARKET_CATALOG.get(code).exchanges
+    for code in _MARKET_CATALOG.supported_market_codes()
 }
 KR_ACTIVE_UNIVERSE_MIN_COUNT = 2526
 CN_ACTIVE_UNIVERSE_MIN_COUNT = 5217

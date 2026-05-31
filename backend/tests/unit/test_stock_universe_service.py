@@ -373,6 +373,48 @@ def test_get_active_symbols_market_filter_falls_back_to_exchange_when_market_bla
     db.close()
 
 
+def test_get_active_symbols_market_filter_falls_back_to_catalog_exchange_for_au():
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    db.add_all(
+        [
+            StockUniverse(
+                symbol="BHP.AX",
+                exchange="XASX",
+                market="",
+                market_cap=1000,
+                is_active=True,
+                status=UNIVERSE_STATUS_ACTIVE,
+                status_reason="Present in ASX universe sync",
+            ),
+            StockUniverse(
+                symbol="CBA.AX",
+                exchange="ASX",
+                market="",
+                market_cap=900,
+                is_active=True,
+                status=UNIVERSE_STATUS_ACTIVE,
+                status_reason="Present in ASX universe sync",
+            ),
+            StockUniverse(
+                symbol="0700.HK",
+                exchange="XHKG",
+                market="",
+                market_cap=800,
+                is_active=True,
+                status=UNIVERSE_STATUS_ACTIVE,
+                status_reason="Present in HKEX universe sync",
+            ),
+        ]
+    )
+    db.commit()
+
+    symbols = stock_universe_service.get_active_symbols(db, market="AU")
+
+    assert symbols == ["BHP.AX", "CBA.AX"]
+    db.close()
+
+
 def test_get_active_symbols_mic_filter_matches_legacy_exchange_alias_rows():
     TestingSessionLocal = _make_session()
     db = TestingSessionLocal()

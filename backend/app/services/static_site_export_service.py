@@ -69,6 +69,7 @@ STATIC_DEFAULT_SCAN_FILTERS_BY_MARKET: dict[str, dict[str, int | None]] = {
     "CA": {"minVolume":   1_400_000},      # ~USD 1M @ CAD 1.36
     "DE": {"minVolume":     900_000},      # ~USD 1M @ EUR 0.92
     "SG": {"minVolume":   1_300_000},      # ~USD 1M @ SGD 1.35
+    "AU": {"minVolume":   1_500_000},      # ~USD 1M @ AUD 1.5
     "MY": {"minVolume":   4_500_000},      # ~USD 1M @ MYR 4.5
 }
 STATIC_DEFAULT_SCAN_FILTERS_FALLBACK: dict[str, int | None] = {"minVolume": None}
@@ -170,6 +171,13 @@ _DEFAULT_KEY_MARKETS = {
         {"symbol": "SAP.DE", "display_name": "SAP", "currency": "EUR"},
         {"symbol": "SIE.DE", "display_name": "Siemens", "currency": "EUR"},
         {"symbol": "ALV.DE", "display_name": "Allianz", "currency": "EUR"},
+    ),
+    "AU": (
+        {"symbol": "^AXJO", "display_name": "S&P/ASX 200", "currency": "AUD"},
+        {"symbol": "IOZ.AX", "display_name": "iShares Core S&P/ASX 200 ETF", "currency": "AUD"},
+        {"symbol": "BHP.AX", "display_name": "BHP Group", "currency": "AUD"},
+        {"symbol": "CBA.AX", "display_name": "Commonwealth Bank", "currency": "AUD"},
+        {"symbol": "CSL.AX", "display_name": "CSL", "currency": "AUD"},
     ),
     "MY": (
         {"symbol": "^KLSE", "display_name": "FBM KLCI", "currency": "MYR"},

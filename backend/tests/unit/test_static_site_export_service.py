@@ -508,11 +508,21 @@ def test_export_scan_bundle_chunks_large_result_sets(service_and_session_factory
 def test_resolve_static_default_filters_returns_per_market_threshold():
     resolve = StaticSiteExportService.resolve_static_default_filters
     assert resolve("US") == {"minVolume": 100_000_000}
+    assert resolve("AU") == {"minVolume": 1_500_000}
     assert resolve("sg") == {"minVolume": 1_300_000}
     assert resolve("MY") == {"minVolume": 4_500_000}
     assert resolve("HK") == STATIC_DEFAULT_SCAN_FILTERS_BY_MARKET["HK"]
     assert resolve("ZZ") == STATIC_DEFAULT_SCAN_FILTERS_FALLBACK
     assert resolve(None) == STATIC_DEFAULT_SCAN_FILTERS_FALLBACK
+
+
+def test_static_key_markets_include_australia_benchmark_symbols(service_and_session_factory):
+    service, _session_factory = service_and_session_factory
+
+    symbols = [item["symbol"] for item in service._build_key_markets("AU")]  # noqa: SLF001
+
+    assert symbols[:2] == ["^AXJO", "IOZ.AX"]
+    assert {"BHP.AX", "CBA.AX"} <= set(symbols)
 
 
 def test_static_default_min_volume_filters_notional_turnover_not_share_count():

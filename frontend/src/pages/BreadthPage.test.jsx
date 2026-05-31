@@ -13,6 +13,22 @@ const runtimeState = {
   primaryMarket: 'HK',
   enabledMarkets: ['US', 'HK'],
   supportedMarkets: ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA', 'DE', 'SG', 'AU', 'MY'],
+  marketCatalog: {
+    markets: [
+      { code: 'US', label: 'United States', capabilities: { breadth: true } },
+      { code: 'HK', label: 'Hong Kong', capabilities: { breadth: true } },
+      { code: 'IN', label: 'India', capabilities: { breadth: true } },
+      { code: 'JP', label: 'Japan', capabilities: { breadth: true } },
+      { code: 'KR', label: 'South Korea', capabilities: { breadth: true } },
+      { code: 'TW', label: 'Taiwan', capabilities: { breadth: true } },
+      { code: 'CN', label: 'China A-shares', capabilities: { breadth: true } },
+      { code: 'CA', label: 'Canada', capabilities: { breadth: true } },
+      { code: 'DE', label: 'Germany', capabilities: { breadth: true } },
+      { code: 'SG', label: 'Singapore', capabilities: { breadth: false } },
+      { code: 'AU', label: 'Australia', capabilities: { breadth: false } },
+      { code: 'MY', label: 'Malaysia', capabilities: { breadth: false } },
+    ],
+  },
 };
 
 vi.mock('../contexts/RuntimeContext', () => ({
@@ -111,7 +127,7 @@ describe('BreadthPage', () => {
     expect(screen.getByRole('combobox', { name: /market/i })).toHaveTextContent('South Korea');
   });
 
-  it('supports Australia as a runtime primary market', async () => {
+  it('does not request unsupported Australia breadth when AU is enabled', async () => {
     runtimeState.primaryMarket = 'AU';
     runtimeState.enabledMarkets = ['AU', 'US'];
 
@@ -120,11 +136,12 @@ describe('BreadthPage', () => {
     expect(await screen.findByText('Latest Breadth Data')).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(breadthApi.getCurrentBreadth).toHaveBeenCalledWith('AU');
-      expect(breadthApi.getBreadthSummary).toHaveBeenCalledWith('AU');
-      expect(stocksApi.getPriceHistory).toHaveBeenCalledWith('IOZ.AX', '1mo');
+      expect(breadthApi.getCurrentBreadth).toHaveBeenCalledWith('US');
+      expect(breadthApi.getBreadthSummary).toHaveBeenCalledWith('US');
+      expect(stocksApi.getPriceHistory).toHaveBeenCalledWith('SPY', '1mo');
     });
-    expect(screen.getByRole('combobox', { name: /market/i })).toHaveTextContent('Australia');
+    expect(breadthApi.getCurrentBreadth).not.toHaveBeenCalledWith('AU');
+    expect(screen.getByRole('combobox', { name: /market/i })).toHaveTextContent('United States');
   });
 
   it('resyncs the default market when runtime primary market data loads late', async () => {

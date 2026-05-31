@@ -55,6 +55,10 @@ import { useRuntime } from '../contexts/RuntimeContext';
 import PriceSparkline from '../components/Scan/PriceSparkline';
 import RSSparkline from '../components/Scan/RSSparkline';
 import GroupChartsGrid from '../components/Charts/GroupChartsGrid';
+import {
+  marketOptionsForCapability,
+  normalizeMarketCode,
+} from '../utils/marketCapabilities';
 
 const MARKET_LABELS = {
   US: 'US',
@@ -64,9 +68,13 @@ const MARKET_LABELS = {
   KR: 'KR',
   TW: 'TW',
   CN: 'CN',
+  CA: 'CA',
   SG: 'SG',
+  AU: 'AU',
   MY: 'MY',
 };
+
+const GROUP_RANKING_MARKET_FALLBACKS = ['US', 'HK', 'IN', 'JP', 'KR', 'TW', 'CN', 'CA'];
 
 const REASON_HINTS = {
   warmup_incomplete: 'Wait for the post-close cache warmup to finish, then retry.',
@@ -499,18 +507,23 @@ function GroupRankingsPage() {
     primaryMarket,
     enabledMarkets,
     supportedMarkets,
+    marketCatalog,
   } = useRuntime();
   const queryClient = useQueryClient();
   const [selectedPeriod, setSelectedPeriod] = useState('1w');
-  const availableMarkets = useMemo(() => {
-    const source = (enabledMarkets && enabledMarkets.length > 0)
-      ? enabledMarkets
-      : (supportedMarkets || ['US']);
-    return Array.from(new Set(source.map((market) => String(market).toUpperCase())));
-  }, [enabledMarkets, supportedMarkets]);
-  const [selectedMarket, setSelectedMarket] = useState(
-    String(primaryMarket || 'US').toUpperCase()
-  );
+  const availableMarkets = useMemo(() => marketOptionsForCapability({
+    marketCatalog,
+    capability: 'group_rankings',
+    fallbackCodes: GROUP_RANKING_MARKET_FALLBACKS,
+    enabledMarkets,
+    supportedMarkets,
+  }), [enabledMarkets, marketCatalog, supportedMarkets]);
+  const [selectedMarket, setSelectedMarket] = useState(() => {
+    const preferredMarket = normalizeMarketCode(primaryMarket || 'US');
+    return availableMarkets.includes(preferredMarket)
+      ? preferredMarket
+      : (availableMarkets[0] || 'US');
+  });
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [orderBy, setOrderBy] = useState('rank');
   const [order, setOrder] = useState('asc');
@@ -523,7 +536,7 @@ function GroupRankingsPage() {
   const liveQueriesEnabled = runtimeReady && (!snapshotEnabled || bootstrapSettled);
 
   useEffect(() => {
-    const preferredMarket = String(primaryMarket || 'US').toUpperCase();
+    const preferredMarket = normalizeMarketCode(primaryMarket || 'US');
     if (availableMarkets.includes(selectedMarket)) {
       return;
     }
