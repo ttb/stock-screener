@@ -144,9 +144,15 @@ class IBDClassificationService:
     def canonical_taxonomy(self, db: Session) -> list[str]:
         """The canonical IBD group list (distinct US CSV/manual groups)."""
         if self._taxonomy is None:
+            # Authoritative US rows only — never let a derived (crosswalk/embedding/
+            # llm) or non-US assignment widen the canonical taxonomy on a later run.
             rows = (
                 db.query(IBDIndustryGroup.industry_group)
-                .filter(IBDIndustryGroup.industry_group.isnot(None))
+                .filter(
+                    IBDIndustryGroup.industry_group.isnot(None),
+                    IBDIndustryGroup.market == "US",
+                    IBDIndustryGroup.source.in_(IBDIndustryService.AUTHORITATIVE_SOURCES),
+                )
                 .distinct()
                 .all()
             )

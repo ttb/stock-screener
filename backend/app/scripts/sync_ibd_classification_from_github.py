@@ -48,7 +48,7 @@ def main() -> int:
         release_tag=RELEASE_TAG,
         manifest_asset_name=latest_manifest_name(market),
         source_mode=source_mode,
-        expected_manifest_schema=str(IBD_CLASSIFICATION_MANIFEST_SCHEMA_VERSION),
+        expected_manifest_schema=IBD_CLASSIFICATION_MANIFEST_SCHEMA_VERSION,
         required_manifest_keys=("bundle_asset_name", "sha256"),
         allow_stale=args.allow_stale,
         github_token=token,

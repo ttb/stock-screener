@@ -151,6 +151,9 @@ def test_ibd_industry_loader_falls_back_to_project_data_when_override_is_missing
 
             return _Q()
 
+        def flush(self) -> None:
+            pass
+
         def rollback(self) -> None:
             self.rollback_calls += 1
 
@@ -167,7 +170,8 @@ def test_ibd_industry_loader_falls_back_to_project_data_when_override_is_missing
     assert loaded == 2
     # Two deletes (csv-sourced rows, then classifier rows for claimed symbols).
     assert fake_db.execute_calls == 2
-    assert fake_db.commit_calls == 2
+    # Single atomic commit at the end (delete + reload in one transaction).
+    assert fake_db.commit_calls == 1
     assert fake_db.rollback_calls == 0
     # Rows now carry provenance (source='csv', market='US').
     assert fake_db.inserted == [
@@ -200,6 +204,9 @@ def test_ibd_industry_loader_does_not_fallback_for_explicit_missing_path(
 
         def bulk_insert_mappings(self, model, rows) -> None:
             raise AssertionError(f"Unexpected bulk insert for {model}: {rows}")
+
+        def flush(self) -> None:
+            pass
 
         def rollback(self) -> None:
             self.rollback_calls += 1
@@ -272,6 +279,9 @@ def test_ibd_industry_loader_treats_empty_csv_path_as_unset(
 
             return _Q()
 
+        def flush(self) -> None:
+            pass
+
         def rollback(self) -> None:
             self.rollback_calls += 1
 
@@ -290,7 +300,8 @@ def test_ibd_industry_loader_treats_empty_csv_path_as_unset(
     assert loaded == 2
     # Two deletes (csv-sourced rows, then classifier rows for claimed symbols).
     assert fake_db.execute_calls == 2
-    assert fake_db.commit_calls == 2
+    # Single atomic commit at the end (delete + reload in one transaction).
+    assert fake_db.commit_calls == 1
     assert fake_db.rollback_calls == 0
     # Rows now carry provenance (source='csv', market='US').
     assert fake_db.inserted == [

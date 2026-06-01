@@ -161,3 +161,20 @@ def test_unresolved_when_no_match_and_no_llm():
     assert result.assignments == []
     assert result.unresolved == ["NOVEC.SG"]
     assert result.summary()["coverage_pct"] == 0.0
+
+
+def test_canonical_taxonomy_ignores_non_us_and_derived_rows():
+    session = _make_session()
+    _seed_taxonomy(session)  # US csv groups
+    # A derived non-US row with a novel group must NOT widen the taxonomy.
+    session.add(IBDIndustryGroup(
+        symbol="X.SG", industry_group="Bogus-Derived-Group",
+        market="SG", source="embedding", confidence=0.3,
+    ))
+    session.commit()
+
+    svc = IBDClassificationService(crosswalk=None, embedding_engine=None)
+    taxonomy = svc.canonical_taxonomy(session)
+
+    assert "Bogus-Derived-Group" not in taxonomy
+    assert set(taxonomy) == {"Computers-Software", "Medical-Drugs", "Energy-Oil"}

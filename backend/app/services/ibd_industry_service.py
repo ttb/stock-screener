@@ -29,6 +29,18 @@ def _market_taxonomy_service():
 _TAXONOMY_SINGLETON = None
 
 
+def _market_has_curated_taxonomy(market: str) -> bool:
+    """True when ``market`` ships a committed classification taxonomy (HK/JP/TW/IN).
+
+    CA/DE/SG/MY register empty taxonomy buckets, so they fall through to the
+    classifier-populated ``ibd_industry_groups`` table instead.
+    """
+    try:
+        return bool(_market_taxonomy_service().groups_for_market(market))
+    except Exception:  # noqa: BLE001 — fail toward the DB path
+        return False
+
+
 class IBDIndustryService:
     """Manage IBD Industry Group data"""
 
@@ -122,7 +134,10 @@ class IBDIndustryService:
                         ),
                     )
                 )
-            db.commit()
+            # No intermediate commit: the whole delete-and-reload runs in one
+            # transaction so a failure rolls back to the prior consistent state
+            # rather than leaving the table partially emptied. The protected
+            # query below still sees the deletes via the session's autoflush.
             logger.info("Cleared existing CSV-sourced IBD industry data")
 
             # 3. Symbols still present are ``manual`` overrides — never replace them.
@@ -151,16 +166,16 @@ class IBDIndustryService:
                 })
                 if len(batch) >= 500:
                     db.bulk_insert_mappings(IBDIndustryGroup, batch)
-                    db.commit()
+                    db.flush()
                     loaded += len(batch)
                     logger.info(f"Loaded {loaded} IBD industry mappings...")
                     batch = []
 
             if batch:
                 db.bulk_insert_mappings(IBDIndustryGroup, batch)
-                db.commit()
                 loaded += len(batch)
 
+            db.commit()  # single commit → delete+reload is atomic
             logger.info(f"Successfully loaded {loaded} IBD industry group mappings")
             return loaded
 
@@ -225,12 +240,14 @@ class IBDIndustryService:
     def get_group_symbols(db: Session, industry_group: str, *, market: str | None = None) -> list:
         """Get all symbols in an industry group.
 
-        For ``market='US'`` (default) reads the persisted ``ibd_industry_groups``
-        table. For HK/JP/TW/IN, delegates to ``MarketTaxonomyService`` which
-        loads classification CSVs from ``data/`` at runtime.
+        Markets with a committed taxonomy (HK/JP/TW/IN) delegate to
+        ``MarketTaxonomyService``. US and taxonomy-less markets (CA/DE/SG/MY,
+        populated by the hybrid classifier) read the ``ibd_industry_groups``
+        table — always filtered by ``market`` so a group's membership never
+        leaks symbols across markets.
         """
         normalized = (market or "US").upper()
-        if normalized != "US":
+        if normalized != "US" and _market_has_curated_taxonomy(normalized):
             try:
                 return _market_taxonomy_service().symbols_for_group(normalized, industry_group)
             except Exception as e:
@@ -241,7 +258,8 @@ class IBDIndustryService:
                 return []
         try:
             records = db.query(IBDIndustryGroup.symbol).filter(
-                IBDIndustryGroup.industry_group == industry_group
+                IBDIndustryGroup.industry_group == industry_group,
+                IBDIndustryGroup.market == normalized,
             ).all()
             return [r.symbol for r in records]
         except Exception as e:
@@ -252,11 +270,13 @@ class IBDIndustryService:
     def get_all_groups(db: Session, *, market: str | None = None) -> list:
         """Get list of all unique industry groups for a market.
 
-        For ``market='US'`` (default) reads the persisted ``ibd_industry_groups``
-        table. For HK/JP/TW/IN, delegates to ``MarketTaxonomyService``.
+        Markets with a committed taxonomy (HK/JP/TW/IN) delegate to
+        ``MarketTaxonomyService``. US and taxonomy-less markets (CA/DE/SG/MY)
+        read the classifier-populated ``ibd_industry_groups`` table, scoped to
+        ``market``.
         """
         normalized = (market or "US").upper()
-        if normalized != "US":
+        if normalized != "US" and _market_has_curated_taxonomy(normalized):
             try:
                 return _market_taxonomy_service().groups_for_market(normalized)
             except Exception as e:
@@ -266,7 +286,12 @@ class IBDIndustryService:
                 )
                 raise
         try:
-            records = db.query(IBDIndustryGroup.industry_group).distinct().all()
+            records = (
+                db.query(IBDIndustryGroup.industry_group)
+                .filter(IBDIndustryGroup.market == normalized)
+                .distinct()
+                .all()
+            )
             return [r.industry_group for r in records]
         except Exception as e:
             logger.error(f"Error getting all industry groups: {e}", exc_info=True)

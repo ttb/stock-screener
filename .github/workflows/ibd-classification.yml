@@ -32,9 +32,10 @@ on:
           - CA
           - DE
           - SG
+          - AU
           - MY
   schedule:
-    # Fallback ~3h after the Saturday weekly-reference cron (10:08 ET) in case
+    # Fallback ~3h after the Saturday weekly-reference cron (08:10 ET) in case
     # the workflow_run trigger is missed.
     - cron: '10 11 * * 6'
       timezone: 'America/New_York'
@@ -73,7 +74,7 @@ jobs:
       matrix:
         # Specific market on dispatch, full matrix otherwise (inputs are null on
         # workflow_run / schedule, so coerce to 'all').
-        market: ${{ fromJSON((github.event.inputs.market || 'all') != 'all' && format('["{0}"]', github.event.inputs.market) || '["US","HK","IN","JP","KR","TW","CN","CA","DE","SG","MY"]') }}
+        market: ${{ fromJSON((github.event.inputs.market || 'all') != 'all' && format('["{0}"]', github.event.inputs.market) || '["US","HK","IN","JP","KR","TW","CN","CA","DE","SG","AU","MY"]') }}
     services:
       postgres:
         image: postgres:16-alpine

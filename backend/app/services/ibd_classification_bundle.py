@@ -18,8 +18,12 @@ from sqlalchemy.orm import Session
 from ..models.industry import IBDIndustryGroup
 from .ibd_industry_service import IBDIndustryService
 
-IBD_CLASSIFICATION_BUNDLE_SCHEMA_VERSION = 1
-IBD_CLASSIFICATION_MANIFEST_SCHEMA_VERSION = 1
+# String schema identifiers, matching the weekly-reference convention. The
+# GitHub release-sync service compares the manifest's schema_version against the
+# expected value with ``!=``, so producer and consumer must use the same type;
+# strings avoid the int-vs-str mismatch that would silently reject every import.
+IBD_CLASSIFICATION_BUNDLE_SCHEMA_VERSION = "ibd-classification-bundle-v1"
+IBD_CLASSIFICATION_MANIFEST_SCHEMA_VERSION = "ibd-classification-manifest-v1"
 
 RELEASE_TAG = "ibd-classification-data"
 
@@ -37,9 +41,11 @@ def write_bundle(output_path: Path, payload: dict) -> str:
     """Write the gzipped JSON bundle; return its sha256 hex digest."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-    # mtime=0 keeps the gzip header deterministic for a given payload.
-    with gzip.GzipFile(filename=str(output_path), mode="wb", mtime=0) as gz:
-        gz.write(data)
+    # filename="" + mtime=0 keep the gzip header path- and time-independent, so
+    # the same payload yields the same bytes (and sha256) regardless of output path.
+    with output_path.open("wb") as fh:
+        with gzip.GzipFile(fileobj=fh, filename="", mode="wb", mtime=0) as gz:
+            gz.write(data)
     return hashlib.sha256(output_path.read_bytes()).hexdigest()
 
 
