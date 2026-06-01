@@ -53,10 +53,23 @@ def env_model_id() -> Optional[str]:
     return _env("IBD_LLM_MODEL")
 
 
-def _resolve_litellm_model(model: str) -> str:
-    """Provider-prefix the model for LiteLLM. A bare name (``deepseek-chat``) is
-    treated as OpenAI-compatible; an already-prefixed id (``minimax/...``,
-    ``openai/...``, ``groq/...``) passes through untouched."""
+def _resolve_litellm_model(model: str, *, has_api_base: bool) -> str:
+    """Provider-prefix the model for LiteLLM.
+
+    The deciding signal is whether a custom ``api_base`` is configured, not
+    whether the id contains a slash:
+    - already ``openai/``-prefixed → unchanged;
+    - custom OpenAI-compatible endpoint (``has_api_base``) → force the ``openai/``
+      prefix so a slashed gateway model id like ``org/model`` (vLLM/LM Studio/HF
+      names) routes through ``api_base`` instead of being misread as a
+      ``<provider>/...`` route;
+    - otherwise a slashed id is a native LiteLLM provider route (e.g.
+      ``groq/llama-3.3-70b``) and a bare name gets the ``openai/`` prefix.
+    """
+    if model.startswith("openai/"):
+        return model
+    if has_api_base:
+        return f"openai/{model}"
     return model if "/" in model else f"openai/{model}"
 
 
@@ -93,7 +106,7 @@ class OpenAICompatibleTiebreaker:
         complete_fn: Optional[Callable[..., str]] = None,
     ):
         self.model = model
-        self.litellm_model = _resolve_litellm_model(model)
+        self.litellm_model = _resolve_litellm_model(model, has_api_base=bool(api_base))
         self.api_base = api_base
         self.api_key = api_key
         self.temperature = temperature

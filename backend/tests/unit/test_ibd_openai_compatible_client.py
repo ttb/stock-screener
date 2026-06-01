@@ -28,9 +28,15 @@ def test_match_choice_none_when_unmatched():
 
 
 def test_resolve_litellm_model_prefixing():
-    assert _resolve_litellm_model("deepseek-chat") == "openai/deepseek-chat"
-    assert _resolve_litellm_model("minimax/MiniMax-M2.7") == "minimax/MiniMax-M2.7"
-    assert _resolve_litellm_model("openai/gpt-4o") == "openai/gpt-4o"
+    # Custom OpenAI-compatible endpoint (api_base set): always openai/-prefixed,
+    # including slashed gateway model ids that aren't LiteLLM provider routes.
+    assert _resolve_litellm_model("deepseek-chat", has_api_base=True) == "openai/deepseek-chat"
+    assert _resolve_litellm_model("org/model", has_api_base=True) == "openai/org/model"
+    assert _resolve_litellm_model("openai/gpt-4o", has_api_base=True) == "openai/gpt-4o"
+    # No custom endpoint: slashed ids are native provider routes; bare names get openai/.
+    assert _resolve_litellm_model("minimax/MiniMax-M2.7", has_api_base=False) == "minimax/MiniMax-M2.7"
+    assert _resolve_litellm_model("groq/llama-3.3-70b", has_api_base=False) == "groq/llama-3.3-70b"
+    assert _resolve_litellm_model("deepseek-chat", has_api_base=False) == "openai/deepseek-chat"
 
 
 def test_tiebreaker_call_uses_injected_completion():
