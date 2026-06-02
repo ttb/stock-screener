@@ -22,9 +22,9 @@
 
 **No change needed to `release-asset-cleanup.yml`** — verified in Self-Review below. The health asset name `ibd-classification-health-{market}.json` matches none of the cleanup's dated patterns (`^ibd-classification-(?P<market>[a-z]{2})-(?P<date>\d{8})-.+\.json\.gz$`), so `asset_market_date()` returns `None` and the asset is preserved as non-dated. It is re-uploaded with `--clobber`, so it never accumulates.
 
-**Setup for every task** (run once per session):
+**Setup for every task** (run once per session, from the repo root):
 ```bash
-cd /Users/admin/Documents/Work/stock-screener/backend
+cd backend
 source venv/bin/activate
 ```
 
