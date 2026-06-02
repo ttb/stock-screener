@@ -234,6 +234,10 @@ def test_max_llm_calls_budget_caps_calls():
     assert result.llm_calls == 1
     assert len(result.assignments) == 3         # the other two soft-attached for free
     assert sum(1 for a in result.assignments if a.method == "centroid_nn_soft") == 2
+    # Budget exhaustion is reported distinctly from the deadline alarm.
+    assert result.llm_budget_exhausted is True
+    assert result.summary()["llm_budget_exhausted"] is True
+    assert result.summary()["partial"] is False  # budget cap is by-design, not "partial"
 
 
 def test_soft_attach_uses_relaxed_crosswalk_plurality():

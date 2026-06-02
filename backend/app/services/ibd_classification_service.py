@@ -80,6 +80,7 @@ class ClassificationResult:
     processed: int = 0
     llm_calls: int = 0
     deadline_hit: bool = False
+    llm_budget_exhausted: bool = False
 
     def summary(self) -> dict:
         by_method: dict[str, int] = {}
@@ -98,7 +99,12 @@ class ClassificationResult:
             "coverage_pct": round(100.0 * classified / total_active, 2) if total_active else 0.0,
             "processed": self.processed,
             "llm_calls": self.llm_calls,
+            # ``partial`` flags the *abnormal* case: the runtime deadline cut the
+            # high-quality (LLM) tier short. Hitting the LLM call budget is a
+            # by-design cost cap, reported separately so it doesn't dilute the
+            # deadline alarm.
             "partial": self.deadline_hit,
+            "llm_budget_exhausted": self.llm_budget_exhausted,
         }
 
 
@@ -384,6 +390,13 @@ class IBDClassificationService:
         clock = clock or time.monotonic
         progress_every = self.PROGRESS_EVERY if progress_every is None else progress_every
 
+        if deadline_seconds is not None and not soft_attach and self.llm_tiebreaker is not None:
+            logger.warning(
+                "IBD %s: deadline set without soft_attach — symbols reached after the "
+                "deadline will be left unresolved (pass soft_attach=True to keep coverage)",
+                market,
+            )
+
         taxonomy = self.canonical_taxonomy(db)
         if not taxonomy:
             logger.warning("No canonical IBD taxonomy available; load the CSV first")
@@ -437,5 +450,8 @@ class IBDClassificationService:
                 if progress_callback is not None:
                     progress_callback(record)
 
+        result.llm_budget_exhausted = (
+            max_llm_calls is not None and result.llm_calls >= max_llm_calls
+        )
         logger.info("IBD classification %s: %s", market, result.summary())
         return result
