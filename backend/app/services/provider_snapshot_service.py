@@ -455,8 +455,9 @@ class ProviderSnapshotService:
             symbol = deserialized["symbol"]
             if symbol in deduped:
                 logger.warning(
-                    "Collapsing duplicate universe row for %s on import "
-                    "(canonical symbol collision); keeping last occurrence.",
+                    "Collapsing duplicate universe row: raw=%r canonicalized to %s "
+                    "(already seen); keeping last occurrence.",
+                    row.get("symbol"),
                     symbol,
                 )
             deduped[symbol] = deserialized
@@ -1284,7 +1285,12 @@ class ProviderSnapshotService:
             db.add(run)
             db.flush()
 
-            rows = []
+            # Dedup snapshot rows by canonical symbol, same as the universe rows
+            # above: a bundle's .TWO/.TW phantom pair re-canonicalizes to one symbol
+            # and would otherwise violate uq_provider_snapshot_row_run_symbol. Keep
+            # the payload and the row in lockstep so cache hydration stays consistent.
+            deduped_rows: Dict[str, ProviderSnapshotRow] = {}
+            deduped_payloads: Dict[str, Dict[str, Any]] = {}
             for row in snapshot_rows:
                 identity = security_master_resolver.resolve_identity(
                     symbol=str(row.get("symbol") or ""),
@@ -1298,10 +1304,11 @@ class ProviderSnapshotService:
                     timezone=row.get("timezone"),
                     local_code=row.get("local_code"),
                 )
+                canonical_symbol = identity.canonical_symbol
                 normalized_payload = dict(row["normalized_payload"])
                 normalized_payload.update(
                     {
-                        "symbol": identity.canonical_symbol,
+                        "symbol": canonical_symbol,
                         "market": identity.market,
                         "exchange": identity.exchange,
                         "currency": identity.currency,
@@ -1309,21 +1316,32 @@ class ProviderSnapshotService:
                         "local_code": identity.local_code,
                     }
                 )
-                imported_payloads.append(normalized_payload)
-                rows.append(
-                    ProviderSnapshotRow(
-                        run_id=run.id,
-                        symbol=identity.canonical_symbol,
-                        exchange=identity.exchange,
-                        row_hash=row["row_hash"],
-                        normalized_payload_json=json.dumps(
-                            normalized_payload, sort_keys=True, default=str
-                        ),
-                        raw_payload_json=None,
+                if canonical_symbol in deduped_rows:
+                    logger.warning(
+                        "Collapsing duplicate snapshot row: raw=%r canonicalized to %s "
+                        "(already seen); keeping last occurrence.",
+                        row.get("symbol"),
+                        canonical_symbol,
                     )
+                deduped_payloads[canonical_symbol] = normalized_payload
+                deduped_rows[canonical_symbol] = ProviderSnapshotRow(
+                    run_id=run.id,
+                    symbol=canonical_symbol,
+                    exchange=identity.exchange,
+                    row_hash=row["row_hash"],
+                    normalized_payload_json=json.dumps(
+                        normalized_payload, sort_keys=True, default=str
+                    ),
+                    raw_payload_json=None,
                 )
+            imported_payloads.extend(deduped_payloads.values())
+            rows = list(deduped_rows.values())
             if rows:
                 db.bulk_save_objects(rows)
+            # The bundle's symbols_total/published reflect its pre-dedup row count;
+            # clamp to what was actually persisted so run metadata can't overclaim.
+            run.symbols_total = min(run.symbols_total, len(rows))
+            run.symbols_published = min(run.symbols_published, len(rows))
 
             db.add(
                 ProviderSnapshotPointer(

@@ -1729,3 +1729,60 @@ def test_replace_market_universe_rows_collapses_phantom_canonical_collisions():
     assert len(persisted) == 1
     assert persisted[0].symbol == "1240.TW"  # both phantoms canonicalize here
     db.close()
+
+
+def test_import_weekly_reference_bundle_collapses_phantom_collisions_end_to_end(tmp_path):
+    # Full import: the phantom .TWO/.TW collapse hits BOTH the universe insert
+    # (ix_stock_universe_symbol) AND the snapshot-row insert
+    # (uq_provider_snapshot_row_run_symbol). Deduping universe rows alone just
+    # moves the crash downstream, so the whole bundle import must survive.
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    service = _make_provider_snapshot_service()
+    snapshot_key = ProviderSnapshotService.snapshot_key_for_market("TW")
+
+    def _uni(symbol):
+        return {
+            "symbol": symbol, "exchange": "XTAI", "market": "TW", "name": "MORNSUN",
+            "currency": "TWD", "timezone": "Asia/Taipei", "local_code": "1240",
+            "is_active": True, "status": UNIVERSE_STATUS_ACTIVE,
+        }
+
+    def _snap(symbol):
+        return {
+            "symbol": symbol, "exchange": "XTAI", "market": "TW",
+            "row_hash": f"hash-{symbol}",
+            "normalized_payload": {"symbol": symbol, "exchange": "XTAI", "market": "TW"},
+        }
+
+    payload = {
+        "schema_version": service.WEEKLY_REFERENCE_BUNDLE_SCHEMA_VERSION,
+        "market": "TW",
+        "generated_at": "2026-06-03T12:00:00Z",
+        "as_of_date": "2026-06-03",
+        "snapshot": {
+            "snapshot_key": snapshot_key,
+            "run_mode": "publish",
+            "status": "published",
+            "source_revision": f"{snapshot_key}:20260603120000",
+            "created_at": "2026-06-03T12:00:00Z",
+            "published_at": "2026-06-03T12:00:00Z",
+            "rows": [_snap("1240.TW"), _snap("1240.TWO")],
+        },
+        "universe": [_uni("1240.TW"), _uni("1240.TWO")],
+    }
+    bundle_path = tmp_path / "weekly-reference-tw.json.gz"
+    with gzip.open(bundle_path, "wt", encoding="utf-8") as fh:
+        json.dump(payload, fh, sort_keys=True)
+
+    service.import_weekly_reference_bundle(db, input_path=bundle_path, hydrate_cache=False)
+
+    universe = db.query(StockUniverse).filter(StockUniverse.market == "TW").all()
+    snap_rows = db.query(ProviderSnapshotRow).all()
+    assert [r.symbol for r in universe] == ["1240.TW"]
+    assert [r.symbol for r in snap_rows] == ["1240.TW"]
+    # run metadata clamped to the actual persisted row count, not the pre-dedup 2.
+    run = db.query(ProviderSnapshotRun).filter(ProviderSnapshotRun.snapshot_key == snapshot_key).one()
+    assert run.symbols_total == 1
+    assert run.symbols_published == 1
+    db.close()
