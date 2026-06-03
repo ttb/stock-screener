@@ -1338,8 +1338,9 @@ class ProviderSnapshotService:
             rows = list(deduped_rows.values())
             if rows:
                 db.bulk_save_objects(rows)
-            # The bundle's symbols_total/published reflect its pre-dedup row count;
-            # clamp to what was actually persisted so run metadata can't overclaim.
+            # Dedup may have reduced the snapshot-row count below what the bundle's
+            # symbols_total/published claim; clamp so run metadata never exceeds the
+            # rows actually persisted. (No-op for non-colliding bundles.)
             run.symbols_total = min(run.symbols_total, len(rows))
             run.symbols_published = min(run.symbols_published, len(rows))
 
