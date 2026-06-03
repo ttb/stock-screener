@@ -437,6 +437,98 @@ class ProviderSnapshotService:
             ).delete(synchronize_session=False)
 
     @staticmethod
+    def _deserialize_universe_rows(rows: Iterable[Dict[str, Any]]) -> list[StockUniverse]:
+        """Deserialize bundle universe rows into StockUniverse objects, collapsing
+        any that canonicalize to the same symbol.
+
+        ``_deserialize_universe_row`` re-canonicalizes each row via the exchange
+        (intentionally — it rewrites bare/board-mismatched symbols). A bundle can
+        therefore contain two rows that resolve to the *same* canonical symbol: e.g.
+        a phantom TW ``.TWO`` copy of a ``.TW`` security whose stored exchange is the
+        TWSE ``XTAI``, which collapses ``.TWO`` -> ``.TW``. Inserting both would hit
+        the ``StockUniverse.symbol`` unique index, so we collapse by canonical symbol
+        (last write wins) and log the collision rather than crash the whole import.
+        """
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            deserialized = ProviderSnapshotService._deserialize_universe_row(row)
+            symbol = deserialized["symbol"]
+            if symbol in deduped:
+                logger.warning(
+                    "Collapsing duplicate universe row: raw=%r canonicalized to %s "
+                    "(already seen); keeping last occurrence.",
+                    row.get("symbol"),
+                    symbol,
+                )
+            deduped[symbol] = deserialized
+        return [StockUniverse(**row) for row in deduped.values()]
+
+    @staticmethod
+    def _deserialize_snapshot_rows(
+        snapshot_rows: Iterable[Dict[str, Any]],
+        *,
+        run_id: int,
+        bundle_market: str,
+    ) -> "dict[str, tuple[ProviderSnapshotRow, Dict[str, Any]]]":
+        """Build ProviderSnapshotRow objects + their hydration payloads, collapsing
+        rows that re-canonicalize to the same symbol.
+
+        Snapshot twin of :meth:`_deserialize_universe_rows`: the same exchange-driven
+        canonicalization that collapses a phantom TW ``.TWO``/``.TW`` pair onto one
+        symbol would otherwise violate ``uq_provider_snapshot_row_run_symbol``. Keyed
+        by canonical symbol so the row and its payload stay in lockstep; last write
+        wins, collisions are logged.
+        """
+        deduped: "dict[str, tuple[ProviderSnapshotRow, Dict[str, Any]]]" = {}
+        for row in snapshot_rows:
+            # Snapshot rows carry currency/timezone only inside normalized_payload
+            # (the export has no top-level keys for them), so read them from there —
+            # otherwise resolve_identity falls back to the market default and the
+            # update() below silently flattens a non-default currency/timezone.
+            # local_code is intentionally left to derive from the symbol: it feeds
+            # canonicalization, and the symbol stem is the authoritative source.
+            payload = row.get("normalized_payload", {})
+            identity = security_master_resolver.resolve_identity(
+                symbol=str(row.get("symbol") or ""),
+                market=row.get("market") or payload.get("market") or bundle_market,
+                exchange=row.get("exchange"),
+                currency=row.get("currency") or payload.get("currency"),
+                timezone=row.get("timezone") or payload.get("timezone"),
+                local_code=row.get("local_code"),
+            )
+            canonical_symbol = identity.canonical_symbol
+            normalized_payload = dict(row["normalized_payload"])
+            normalized_payload.update(
+                {
+                    "symbol": canonical_symbol,
+                    "market": identity.market,
+                    "exchange": identity.exchange,
+                    "currency": identity.currency,
+                    "timezone": identity.timezone,
+                    "local_code": identity.local_code,
+                }
+            )
+            if canonical_symbol in deduped:
+                logger.warning(
+                    "Collapsing duplicate snapshot row: raw=%r canonicalized to %s "
+                    "(already seen); keeping last occurrence.",
+                    row.get("symbol"),
+                    canonical_symbol,
+                )
+            snapshot_row = ProviderSnapshotRow(
+                run_id=run_id,
+                symbol=canonical_symbol,
+                exchange=identity.exchange,
+                row_hash=row["row_hash"],
+                normalized_payload_json=json.dumps(
+                    normalized_payload, sort_keys=True, default=str
+                ),
+                raw_payload_json=None,
+            )
+            deduped[canonical_symbol] = (snapshot_row, normalized_payload)
+        return deduped
+
+    @staticmethod
     def _replace_market_universe_rows(
         db: Session,
         *,
@@ -446,10 +538,7 @@ class ProviderSnapshotService:
         db.query(StockUniverse).filter(StockUniverse.market == market).delete(
             synchronize_session=False
         )
-        imported_universe = [
-            StockUniverse(**ProviderSnapshotService._deserialize_universe_row(row))
-            for row in rows
-        ]
+        imported_universe = ProviderSnapshotService._deserialize_universe_rows(rows)
         if imported_universe:
             db.bulk_save_objects(imported_universe)
         return len(imported_universe)
@@ -461,10 +550,7 @@ class ProviderSnapshotService:
         rows: Iterable[Dict[str, Any]],
     ) -> int:
         db.query(StockUniverse).delete(synchronize_session=False)
-        imported_universe = [
-            StockUniverse(**ProviderSnapshotService._deserialize_universe_row(row))
-            for row in rows
-        ]
+        imported_universe = ProviderSnapshotService._deserialize_universe_rows(rows)
         if imported_universe:
             db.bulk_save_objects(imported_universe)
         return len(imported_universe)
@@ -1264,46 +1350,22 @@ class ProviderSnapshotService:
             db.add(run)
             db.flush()
 
-            rows = []
-            for row in snapshot_rows:
-                identity = security_master_resolver.resolve_identity(
-                    symbol=str(row.get("symbol") or ""),
-                    market=(
-                        row.get("market")
-                        or row.get("normalized_payload", {}).get("market")
-                        or bundle_market
-                    ),
-                    exchange=row.get("exchange"),
-                    currency=row.get("currency"),
-                    timezone=row.get("timezone"),
-                    local_code=row.get("local_code"),
-                )
-                normalized_payload = dict(row["normalized_payload"])
-                normalized_payload.update(
-                    {
-                        "symbol": identity.canonical_symbol,
-                        "market": identity.market,
-                        "exchange": identity.exchange,
-                        "currency": identity.currency,
-                        "timezone": identity.timezone,
-                        "local_code": identity.local_code,
-                    }
-                )
-                imported_payloads.append(normalized_payload)
-                rows.append(
-                    ProviderSnapshotRow(
-                        run_id=run.id,
-                        symbol=identity.canonical_symbol,
-                        exchange=identity.exchange,
-                        row_hash=row["row_hash"],
-                        normalized_payload_json=json.dumps(
-                            normalized_payload, sort_keys=True, default=str
-                        ),
-                        raw_payload_json=None,
-                    )
-                )
+            # Build + dedup snapshot rows by canonical symbol (see
+            # _deserialize_snapshot_rows): a bundle's .TWO/.TW phantom pair
+            # re-canonicalizes to one symbol and would otherwise violate
+            # uq_provider_snapshot_row_run_symbol. Row and payload stay in lockstep.
+            deduped = self._deserialize_snapshot_rows(
+                snapshot_rows, run_id=run.id, bundle_market=bundle_market
+            )
+            rows = [snapshot_row for snapshot_row, _ in deduped.values()]
+            imported_payloads.extend(payload for _, payload in deduped.values())
             if rows:
                 db.bulk_save_objects(rows)
+            # Dedup may have reduced the snapshot-row count below what the bundle's
+            # symbols_total/published claim; clamp so run metadata never exceeds the
+            # rows actually persisted. (No-op for non-colliding bundles.)
+            run.symbols_total = min(run.symbols_total, len(rows))
+            run.symbols_published = min(run.symbols_published, len(rows))
 
             db.add(
                 ProviderSnapshotPointer(
