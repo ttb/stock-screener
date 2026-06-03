@@ -25,6 +25,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in desktop packaging
 
 from ..database import SessionLocal
 from ..models.stock import StockFundamental
+from .universe_classification import backfill_universe_classification
 from ..config import settings
 from .errors import CacheRefreshError
 from .fundamentals_completeness import (
@@ -1115,6 +1116,12 @@ class FundamentalsCacheService:
                 )
                 db.add(new_record)
                 logger.info(f"Inserted fundamental data for {symbol} in database")
+
+            # Propagate sector/industry into the universe row when it's missing
+            # there (foreign-market ingest lacks it); never clobbers a real value.
+            backfill_universe_classification(
+                db, symbol, sector=data.get("sector"), industry=data.get("industry")
+            )
 
             db.commit()
 

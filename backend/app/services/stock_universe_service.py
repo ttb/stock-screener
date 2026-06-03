@@ -31,6 +31,7 @@ from ..models.stock_universe import (
 )
 from ..models.stock import StockIndustry
 from ..models.ticker_validation import TickerValidationLog
+from .universe_classification import prefer_meaningful
 from ..schemas.universe import IndexName
 from ..config import settings
 from ..domain.markets.catalog import get_market_catalog
@@ -2262,8 +2263,8 @@ class StockUniverseService:
                     existing.currency = identity.currency
                     existing.timezone = identity.timezone
                     existing.local_code = identity.local_code or existing.local_code
-                    existing.sector = stock_data["sector"] or existing.sector
-                    existing.industry = stock_data["industry"] or existing.industry
+                    existing.sector = prefer_meaningful(stock_data["sector"], existing.sector)
+                    existing.industry = prefer_meaningful(stock_data["industry"], existing.industry)
                     existing.market_cap = stock_data["market_cap"] or existing.market_cap
                     self._apply_status_transition(
                         db,

@@ -26,6 +26,7 @@ from ..models.stock_universe import (
     UNIVERSE_EVENT_LISTING_TIER_CHANGED,
     UNIVERSE_STATUS_ACTIVE,
 )
+from .universe_classification import prefer_meaningful
 
 
 class UniverseCanonicalizer(Protocol):
@@ -409,8 +410,8 @@ class UniversePersistence:
         existing.currency = row.currency
         existing.timezone = row.timezone
         existing.local_code = row.local_code or existing.local_code
-        existing.sector = row.sector or existing.sector
-        existing.industry = row.industry or existing.industry
+        existing.sector = prefer_meaningful(row.sector, existing.sector)
+        existing.industry = prefer_meaningful(row.industry, existing.industry)
         if row.market_cap is not None:
             existing.market_cap = row.market_cap
 
