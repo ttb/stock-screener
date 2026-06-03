@@ -481,16 +481,19 @@ class ProviderSnapshotService:
         """
         deduped: "dict[str, tuple[ProviderSnapshotRow, Dict[str, Any]]]" = {}
         for row in snapshot_rows:
+            # Snapshot rows carry currency/timezone only inside normalized_payload
+            # (the export has no top-level keys for them), so read them from there —
+            # otherwise resolve_identity falls back to the market default and the
+            # update() below silently flattens a non-default currency/timezone.
+            # local_code is intentionally left to derive from the symbol: it feeds
+            # canonicalization, and the symbol stem is the authoritative source.
+            payload = row.get("normalized_payload", {})
             identity = security_master_resolver.resolve_identity(
                 symbol=str(row.get("symbol") or ""),
-                market=(
-                    row.get("market")
-                    or row.get("normalized_payload", {}).get("market")
-                    or bundle_market
-                ),
+                market=row.get("market") or payload.get("market") or bundle_market,
                 exchange=row.get("exchange"),
-                currency=row.get("currency"),
-                timezone=row.get("timezone"),
+                currency=row.get("currency") or payload.get("currency"),
+                timezone=row.get("timezone") or payload.get("timezone"),
                 local_code=row.get("local_code"),
             )
             canonical_symbol = identity.canonical_symbol

@@ -1786,3 +1786,58 @@ def test_import_weekly_reference_bundle_collapses_phantom_collisions_end_to_end(
     assert run.symbols_total == 1
     assert run.symbols_published == 1
     db.close()
+
+
+def test_import_snapshot_row_preserves_non_default_currency_and_timezone(tmp_path):
+    # A snapshot row carries currency/timezone only inside normalized_payload (the
+    # export format has no top-level keys for them). The import must read them from
+    # there, not hard-overwrite with the market default — otherwise a security that
+    # legitimately trades in a non-default currency gets flattened on re-import.
+    TestingSessionLocal = _make_session()
+    db = TestingSessionLocal()
+    service = _make_provider_snapshot_service()
+    snapshot_key = ProviderSnapshotService.snapshot_key_for_market("TW")
+
+    payload = {
+        "schema_version": service.WEEKLY_REFERENCE_BUNDLE_SCHEMA_VERSION,
+        "market": "TW",
+        "generated_at": "2026-06-03T12:00:00Z",
+        "as_of_date": "2026-06-03",
+        "snapshot": {
+            "snapshot_key": snapshot_key,
+            "run_mode": "publish",
+            "status": "published",
+            "source_revision": f"{snapshot_key}:20260603120000",
+            "created_at": "2026-06-03T12:00:00Z",
+            "published_at": "2026-06-03T12:00:00Z",
+            "rows": [
+                {
+                    "symbol": "9999.TW",
+                    "exchange": "XTAI",
+                    "row_hash": "h",
+                    "normalized_payload": {
+                        "symbol": "9999.TW",
+                        "exchange": "XTAI",
+                        "market": "TW",
+                        "currency": "USD",            # non-default for TW (TWD)
+                        "timezone": "America/New_York",  # non-default for TW
+                    },
+                }
+            ],
+        },
+        "universe": [
+            {"symbol": "9999.TW", "exchange": "XTAI", "market": "TW",
+             "is_active": True, "status": UNIVERSE_STATUS_ACTIVE},
+        ],
+    }
+    bundle_path = tmp_path / "weekly-reference-tw.json.gz"
+    with gzip.open(bundle_path, "wt", encoding="utf-8") as fh:
+        json.dump(payload, fh, sort_keys=True)
+
+    service.import_weekly_reference_bundle(db, input_path=bundle_path, hydrate_cache=False)
+
+    row = db.query(ProviderSnapshotRow).filter(ProviderSnapshotRow.symbol == "9999.TW").one()
+    stored = json.loads(row.normalized_payload_json)
+    assert stored["currency"] == "USD"               # not flattened to TWD
+    assert stored["timezone"] == "America/New_York"   # not flattened to Asia/Taipei
+    db.close()
