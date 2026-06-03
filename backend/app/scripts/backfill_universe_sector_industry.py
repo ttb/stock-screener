@@ -48,6 +48,9 @@ def backfill_universe(
     Pure orchestration over an injected fetcher (so it's testable without yfinance);
     reuses the shared, no-clobber ``_backfill_universe_classification`` for the actual
     write so the precedence rules stay in one place.
+
+    ``dry_run`` rolls ``db`` back at the end, so pass a session with no other pending
+    writes (``main()`` opens a fresh one).
     """
     query = db.query(StockUniverse).filter(StockUniverse.is_active.is_(True))
     if market:

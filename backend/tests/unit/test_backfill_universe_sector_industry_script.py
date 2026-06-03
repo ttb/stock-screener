@@ -56,8 +56,16 @@ def test_market_filter_and_limit():
     _add(session, "600519.SS", "CN", "Other", None)
 
     stats = backfill_universe(session, fetch_fundamentals=_fetch, market="hk", limit=1)
-    assert stats["candidates"] == 1   # HK only, capped at 1
+    assert stats["candidates"] == 1   # HK only, capped at 1 of the 2 HK candidates
     assert stats["filled"] == 1
+    # Exactly one HK row was filled; the other was dropped by the limit (still empty),
+    # and CN was excluded by the market filter.
+    hk_filled = [
+        r for r in session.query(StockUniverse).filter_by(market="HK").all()
+        if (r.sector or "")
+    ]
+    assert len(hk_filled) == 1
+    assert (session.query(StockUniverse).filter_by(symbol="600519.SS").first().sector) == "Other"
 
 
 def test_dry_run_reports_without_persisting():
