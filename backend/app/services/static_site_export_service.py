@@ -1957,11 +1957,16 @@ class StaticSiteExportService:
 
     @staticmethod
     def _static_chart_cutoff(index) -> datetime:
-        """The display-window cutoff (``STATIC_CHART_PERIOD_DAYS``) aligned to ``index``'s tz."""
-        cutoff = datetime.utcnow() - timedelta(days=STATIC_CHART_PERIOD_DAYS)
-        if getattr(index, "tz", None) is not None:
-            cutoff = cutoff.replace(tzinfo=index.tz)
-        return cutoff
+        """The display-window cutoff (``STATIC_CHART_PERIOD_DAYS``), converted to ``index``'s tz.
+
+        Computed in UTC and tz-converted (not ``replace(tzinfo=...)``, which would
+        reinterpret the UTC wall time as local and shift the boundary day).
+        """
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=STATIC_CHART_PERIOD_DAYS)
+        index_tz = getattr(index, "tz", None)
+        if index_tz is not None:
+            return cutoff.tz_convert(index_tz).to_pydatetime()
+        return cutoff.tz_localize(None).to_pydatetime()
 
     def _serialize_rs_line(
         self, stock_data, benchmark_df

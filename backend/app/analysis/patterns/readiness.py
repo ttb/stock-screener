@@ -225,12 +225,16 @@ def _compute_readiness_core(
             rolling_slope(rs_series, window=trend_lookback)
         )
 
-        rs_tail = rs_series.dropna().tail(rs_lookback)
+        # Evaluate both new-high predicates on one benchmark-aligned frame so RS
+        # and price share the same end date — a trailing-NaN benchmark must not let
+        # the RS window lead the price window and emit a false blue dot.
+        aligned = pd.DataFrame({"rs": rs_series, "price": close}).dropna()
+        rs_tail = aligned["rs"].tail(rs_lookback)
         if not rs_tail.empty:
-            rs_line_new_high = at_new_high(rs_series, window=rs_lookback)
+            rs_line_new_high = at_new_high(aligned["rs"], window=rs_lookback)
             # Blue dot: RS line leads price — RS at a new high while price is not.
             rs_line_blue_dot = bool(
-                rs_line_new_high and not at_new_high(close, window=rs_lookback)
+                rs_line_new_high and not at_new_high(aligned["price"], window=rs_lookback)
             )
             rs_252_max = float(rs_tail.max())
 

@@ -9,8 +9,6 @@ symbol→market resolver in the codebase — every call site does its own
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -27,11 +25,17 @@ PERIOD_DAYS: dict[str, int] = {
 
 
 def window_cutoff(index: pd.Index, days: int) -> pd.Timestamp:
-    """Return the tz-aware ``now - days`` cutoff aligned to ``index``'s tz."""
-    cutoff = pd.Timestamp(datetime.now() - timedelta(days=days))
-    if getattr(index, "tz", None) is not None:
-        cutoff = cutoff.tz_localize(index.tz)
-    return cutoff
+    """Return the ``now - days`` cutoff, converted to ``index``'s tz.
+
+    Computed in UTC then tz-converted so the boundary is correct regardless of
+    the server's local timezone (a naive local cutoff localized to the index tz
+    would shift the window by the tz offset).
+    """
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
+    index_tz = getattr(index, "tz", None)
+    if index_tz is not None:
+        return cutoff.tz_convert(index_tz)
+    return cutoff.tz_localize(None)
 
 
 def resolve_symbol_market(db: Session, symbol: str) -> str | None:
