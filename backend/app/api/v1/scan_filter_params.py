@@ -75,6 +75,8 @@ def parse_scan_filters(
     ratings: Optional[str] = Query(None, description="Rating filter (comma-separated)"),
     ibd_industries: Optional[str] = Query(None, description="IBD industry filter (comma-separated)"),
     ibd_industries_mode: Optional[str] = Query(None, description="IBD industry filter mode: include or exclude"),
+    min_ibd_group_rank: Optional[int] = Query(None, ge=1, description="Minimum IBD group rank"),
+    max_ibd_group_rank: Optional[int] = Query(None, ge=1, description="Maximum IBD group rank"),
     gics_sectors: Optional[str] = Query(None, description="GICS sector filter (comma-separated)"),
     gics_sectors_mode: Optional[str] = Query(None, description="GICS sector filter mode: include or exclude"),
     # Composite score
@@ -238,6 +240,7 @@ def parse_scan_filters(
     f.add_range("sales_growth_yy", min_sales_growth_yy, None)
     f.add_range("peg_ratio", None, max_peg)
     f.add_range("eps_rating", min_eps_rating, max_eps_rating)
+    f.add_range("ibd_group_rank", min_ibd_group_rank, max_ibd_group_rank)
     f.add_range("volume", min_volume, None)
     f.add_range("market_cap", min_market_cap, None)
     f.add_range("market_cap_usd", min_market_cap_usd, max_market_cap_usd)

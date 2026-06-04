@@ -19,11 +19,14 @@ describe('buildFilterParams — cross-market USD filters (3axp)', () => {
     const params = buildFilterParams({
       marketCapUsd: { min: 1_000_000_000, max: 50_000_000_000 },
       advUsd: { min: 10_000_000, max: null },
+      ibdGroupRank: { min: 1, max: 40 },
     });
     expect(params.min_market_cap_usd).toBe(1_000_000_000);
     expect(params.max_market_cap_usd).toBe(50_000_000_000);
     expect(params.min_adv_usd).toBe(10_000_000);
     expect(params.max_adv_usd).toBeUndefined();
+    expect(params.min_ibd_group_rank).toBe(1);
+    expect(params.max_ibd_group_rank).toBe(40);
   });
 
   it('joins markets array as comma-separated when non-empty', () => {

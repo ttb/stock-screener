@@ -29,7 +29,7 @@ export const MARKET_CAP_OPTIONS = [
 
 export const FUNDAMENTAL_KEYS = [
   'symbolSearch', 'minMarketCap', 'minVolume', 'price',
-  'epsGrowth', 'salesGrowth', 'epsRating', 'ibdIndustries', 'gicsSectors', 'ipoAfter',
+  'epsGrowth', 'salesGrowth', 'epsRating', 'ibdGroupRank', 'ibdIndustries', 'gicsSectors', 'ipoAfter',
   'markets', 'marketCapUsd', 'advUsd',
 ];
 

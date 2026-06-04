@@ -128,6 +128,20 @@ describe('static scan client', () => {
     expect(filtered.map((row) => row.symbol)).toEqual(['MSFT', 'SNOW']);
   });
 
+  it('filters by IBD group rank range', () => {
+    const testRows = [
+      { ...rows[0], symbol: 'LEADER', ibd_group_rank: 40 },
+      { ...rows[1], symbol: 'LAGGING_GROUP', ibd_group_rank: 41 },
+      { ...rows[2], symbol: 'UNKNOWN_GROUP', ibd_group_rank: null },
+    ];
+    const filters = buildDefaultScanFilters();
+    filters.ibdGroupRank = { min: null, max: 40 };
+
+    const filtered = filterStaticScanRows(testRows, filters);
+
+    expect(filtered.map((row) => row.symbol)).toEqual(['LEADER']);
+  });
+
   it('resolves IPO date presets to a cutoff (not raw string comparison)', () => {
     // Frozen clock: 2024-01-15 UTC. Derived cutoffs:
     //   1y  → 2023-01-15   5y → 2019-01-15   6m → 2023-07-15

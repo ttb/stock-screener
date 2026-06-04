@@ -87,6 +87,8 @@ export const buildFilterParams = (filters, options = {}) => {
   if (filters.rs3m?.max != null) params.max_rs_3m = filters.rs3m.max;
   if (filters.rs12m?.min != null) params.min_rs_12m = filters.rs12m.min;
   if (filters.rs12m?.max != null) params.max_rs_12m = filters.rs12m.max;
+  if (filters.ibdGroupRank?.min != null) params.min_ibd_group_rank = filters.ibdGroupRank.min;
+  if (filters.ibdGroupRank?.max != null) params.max_ibd_group_rank = filters.ibdGroupRank.max;
 
   // EPS Rating
   if (filters.epsRating?.min != null) params.min_eps_rating = filters.epsRating.min;

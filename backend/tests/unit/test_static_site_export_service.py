@@ -57,6 +57,17 @@ def _insert_runs(
         db.commit()
 
 
+class _FakePriceCache:
+    def __init__(self, get_many_cached_only):
+        self._get_many_cached_only = get_many_cached_only
+
+    def get_many_cached_only(self, symbols, period="2y"):
+        return self._get_many_cached_only(symbols, period=period)
+
+    def get_cached_only(self, symbol, period="2y"):
+        return self.get_many_cached_only([symbol], period=period).get(symbol.upper())
+
+
 def test_get_latest_published_run_prefers_latest_published_pointer(service_and_session_factory):
     service, session_factory = service_and_session_factory
     _insert_runs(
@@ -1620,7 +1631,7 @@ def test_export_chart_bundle_writes_top_ranked_payloads_with_sidebar_metadata(
             index=dates,
         )
 
-    service._price_cache = SimpleNamespace(
+    service._price_cache = _FakePriceCache(
         get_many_cached_only=lambda symbols, period="2y": {
             "NVDA": make_price_frame([101.0, 102.5, 103.0]),
             "MSFT": make_price_frame([201.0, 202.0, 204.0]),
@@ -1746,7 +1757,7 @@ def test_export_chart_bundle_backfills_past_skipped_symbols_to_fill_limit(
             index=dates,
         )
 
-    service._price_cache = SimpleNamespace(
+    service._price_cache = _FakePriceCache(
         get_many_cached_only=lambda symbols, period="2y": {
             "NVDA": None,
             "MSFT": make_price_frame(204.0),
@@ -1801,7 +1812,7 @@ def test_export_chart_bundle_uses_sorted_scan_order_for_primary_chart_selection(
     monkeypatch.setattr(export_module, "STATIC_CHART_LIMIT", 1)
     monkeypatch.setattr(export_module, "STATIC_CHART_LOOKUP_BATCH_SIZE", 2)
 
-    service._price_cache = SimpleNamespace(
+    service._price_cache = _FakePriceCache(
         get_many_cached_only=lambda symbols, period="2y": {
             symbol: _make_chart_price_frame(100.0 + index)
             for index, symbol in enumerate(symbols)
@@ -1892,7 +1903,7 @@ def test_export_chart_bundle_expands_coverage_for_preset_screens(
     monkeypatch.setattr(export_module, "STATIC_CHART_LOOKUP_BATCH_SIZE", 5)
     monkeypatch.setattr(export_module, "STATIC_CHART_PRESET_TOP_N", 5)
 
-    service._price_cache = SimpleNamespace(
+    service._price_cache = _FakePriceCache(
         get_many_cached_only=lambda symbols, period="2y": {
             symbol: _make_chart_price_frame(100.0 + i)
             for i, symbol in enumerate(symbols)
@@ -1999,7 +2010,7 @@ def test_export_chart_bundle_skips_preset_symbols_without_cached_prices(
 
     # NOCACHE has no cached prices but matches the 4% Gainers preset —
     # Pass 2 must honor the skipped_symbols exclusion and not re-attempt.
-    service._price_cache = SimpleNamespace(
+    service._price_cache = _FakePriceCache(
         get_many_cached_only=lambda symbols, period="2y": {
             "NVDA": _make_chart_price_frame(),
             "NOCACHE": None,
@@ -2077,7 +2088,7 @@ def test_export_chart_bundle_expands_coverage_for_top_groups_constituents(
     monkeypatch.setattr(export_module, "STATIC_CHART_PRESET_TOP_N", 0)
     monkeypatch.setattr(export_module, "STATIC_CHART_TOP_N_GROUPS", 2)
 
-    service._price_cache = SimpleNamespace(
+    service._price_cache = _FakePriceCache(
         get_many_cached_only=lambda symbols, period="2y": {
             symbol: _make_chart_price_frame(100.0 + i)
             for i, symbol in enumerate(symbols)

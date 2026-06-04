@@ -29,6 +29,7 @@ export const buildDefaultScanFilters = () => ({
   rs3m: { min: null, max: null },
   rs12m: { min: null, max: null },
   epsRating: { min: null, max: null },
+  ibdGroupRank: { min: null, max: null },
   price: { min: null, max: null },
   adrPercent: { min: null, max: null },
   epsGrowth: { min: null, max: null },

@@ -292,6 +292,117 @@ describe('StaticScanPage', () => {
     });
   });
 
+  it('applies the Leaders in Leading Groups preset from the static manifest', async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      const path = String(url).split('/static-data/')[1];
+
+      if (path === 'manifest.json') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            pages: {
+              scan: {
+                path: 'scan/manifest.json',
+              },
+            },
+          }),
+        };
+      }
+
+      if (path === 'scan/manifest.json') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            generated_at: '2026-04-01T00:00:00Z',
+            as_of_date: '2026-03-31',
+            run_id: 9,
+            sort: { field: 'composite_score', order: 'desc' },
+            default_page_size: 50,
+            rows_total: 2,
+            default_filters: { minVolume: 100000000 },
+            default_filtered_rows_total: 2,
+            filter_options: {
+              ibd_industries: ['Semiconductors', 'Software'],
+              gics_sectors: ['Technology'],
+              ratings: ['Strong Buy', 'Buy'],
+            },
+            initial_rows: [
+              {
+                symbol: 'LEAD',
+                company_name: 'Leader Corp',
+                composite_score: 92,
+                rs_rating: 91,
+                volume: 150000000,
+                ibd_group_rank: 12,
+              },
+              {
+                symbol: 'LATE',
+                company_name: 'Late Group Inc',
+                composite_score: 96,
+                rs_rating: 95,
+                volume: 150000000,
+                ibd_group_rank: 41,
+              },
+            ],
+            preset_screens: [
+              {
+                id: 'leaders_in_leading_groups',
+                name: 'Leaders in Leading Groups',
+                short_name: 'Leaders',
+                description: 'Strong report-card stocks in top 40 IBD groups',
+                tier: 2,
+                filters: {
+                  ibdGroupRank: { min: null, max: 40 },
+                  rsRating: { min: 80, max: null },
+                  compositeScore: { min: 70, max: null },
+                  minVolume: 100000000,
+                },
+                sort_by: 'composite_score',
+                sort_order: 'desc',
+              },
+            ],
+            chunks: [],
+            charts: {
+              path: 'charts/index.json',
+              limit: 200,
+              symbols_total: 1,
+              available: true,
+            },
+          }),
+        };
+      }
+
+      if (path === 'charts/index.json') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            symbols: [{ symbol: 'LEAD', rank: 1, path: 'charts/LEAD.json' }],
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      };
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Leaders (1)')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Leaders (1)'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('results-table-rows')).toHaveTextContent('LEAD');
+      expect(screen.getByTestId('results-table-rows')).not.toHaveTextContent('LATE');
+    });
+  });
+
   it('normalizes exported filter options before rendering the filter panel', async () => {
     globalThis.fetch = vi.fn(async (url) => {
       const path = String(url).split('/static-data/')[1];

@@ -31,6 +31,7 @@ const RS_FILTERS = [
   { key: 'rs3m', label: 'RS 3M' },
   { key: 'rs12m', label: 'RS 12M' },
   { key: 'epsRating', label: 'EPS Rtg' },
+  { key: 'ibdGroupRank', label: 'Grp Rank' },
 ];
 
 const TECH_FILTERS = [

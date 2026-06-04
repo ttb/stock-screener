@@ -15,6 +15,7 @@ const RANGE_FILTER_TO_FIELD = {
   rs3m: 'rs_rating_3m',
   rs12m: 'rs_rating_12m',
   epsRating: 'eps_rating',
+  ibdGroupRank: 'ibd_group_rank',
   price: 'current_price',
   adrPercent: 'adr_percent',
   epsGrowth: 'eps_growth_qq',

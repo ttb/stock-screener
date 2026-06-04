@@ -64,6 +64,23 @@ const manifest = {
   },
 };
 
+const makeLeaderRow = (index, overrides = {}) => ({
+  symbol: `LEAD${String(index).padStart(2, '0')}`,
+  company_name: `Leader ${index}`,
+  composite_score: 100 - index,
+  rs_rating: 95,
+  current_price: 100 + index,
+  rating: 'Strong Buy',
+  volume: 150_000_000,
+  market_cap: 2_000_000_000,
+  currency: 'USD',
+  ibd_industry_group: 'Semiconductors',
+  ibd_group_rank: 10,
+  price_sparkline_data: null,
+  rs_sparkline_data: null,
+  ...overrides,
+});
+
 describe('StaticHomePage', () => {
   let homePayload;
   let scanManifestPayload;
@@ -237,7 +254,7 @@ describe('StaticHomePage', () => {
     renderWithProviders(<StaticHomePage />);
 
     expect(await screen.findByText('0700.HK')).toBeInTheDocument();
-    expect(screen.getByText('MCap')).toBeInTheDocument();
+    expect(screen.getAllByText('MCap').length).toBeGreaterThan(0);
     expect(screen.getByText('$500.0M')).toBeInTheDocument();
     expect(screen.queryByText('HK$3.9T')).not.toBeInTheDocument();
     expect(fetchStaticJson).toHaveBeenCalledWith('markets/us/scan/manifest.json');
@@ -262,6 +279,86 @@ describe('StaticHomePage', () => {
         open: true,
         initialSymbol: 'NVDA',
         navigationSymbols: ['NVDA', 'AAPL'],
+      });
+    });
+  });
+
+  it('shows top 20 leaders in leading groups after top scan candidates with leader-scoped chart navigation', async () => {
+    const leaderRows = Array.from({ length: 21 }, (_, index) => makeLeaderRow(index + 1));
+    const rejectedRows = [
+      makeLeaderRow(31, { symbol: 'WEAKRS', rs_rating: 79 }),
+      makeLeaderRow(32, { symbol: 'LATEGROUP', ibd_group_rank: 41 }),
+      makeLeaderRow(33, { symbol: 'LOWSCORE', composite_score: 69 }),
+      makeLeaderRow(34, { symbol: 'THINVOL', volume: 99_999_999 }),
+    ];
+    useStaticChartIndex.mockReturnValue({
+      data: {
+        symbols: [
+          { symbol: 'LEAD01', rank: 1, path: 'charts/LEAD01.json' },
+          { symbol: 'LEAD02', rank: 2, path: 'charts/LEAD02.json' },
+        ],
+      },
+    });
+    fetchStaticJson.mockImplementation(async (path) => {
+      if (path === 'markets/us/home.json') {
+        return {
+          market_display_name: 'United States',
+          freshness: {
+            scan_as_of_date: '2026-04-24',
+            breadth_latest_date: '2026-04-24',
+            groups_latest_date: '2026-04-24',
+          },
+          key_markets: [],
+          scan_summary: { top_results: [] },
+          top_groups: [],
+        };
+      }
+
+      if (path === 'markets/us/scan/manifest.json') {
+        return {
+          initial_rows: [],
+          chunks: [
+            { path: 'markets/us/scan/chunks/chunk-0001.json' },
+          ],
+        };
+      }
+
+      if (path === 'markets/us/scan/chunks/chunk-0001.json') {
+        return {
+          rows: [...leaderRows, ...rejectedRows],
+        };
+      }
+
+      throw new Error(`Unexpected static path: ${path}`);
+    });
+
+    renderWithProviders(<StaticHomePage />);
+
+    const topCandidatesHeading = await screen.findByText('Top Scan Candidates');
+    const leadersHeading = await screen.findByText('Leaders in Leading Groups');
+    const topGroupsHeading = await screen.findByText('Top 10 Groups');
+    expect(
+      topCandidatesHeading.compareDocumentPosition(leadersHeading) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      leadersHeading.compareDocumentPosition(topGroupsHeading) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(screen.getAllByText('LEAD01').length).toBeGreaterThan(0);
+    expect(screen.queryByText('LEAD21')).not.toBeInTheDocument();
+    expect(screen.queryByText('WEAKRS')).not.toBeInTheDocument();
+    expect(screen.queryByText('LATEGROUP')).not.toBeInTheDocument();
+    expect(screen.queryByText('LOWSCORE')).not.toBeInTheDocument();
+    expect(screen.queryByText('THINVOL')).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByText('LEAD01').at(-1));
+
+    await waitFor(() => {
+      const props = modalSpy.mock.calls.at(-1)?.[0];
+      expect(props).toMatchObject({
+        open: true,
+        initialSymbol: 'LEAD01',
+        navigationSymbols: ['LEAD01', 'LEAD02'],
       });
     });
   });
