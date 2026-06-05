@@ -12,17 +12,12 @@ import sys
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.scripts.export_static_site as export_script
 import app.tasks.fundamentals_tasks as fundamentals_tasks
 import app.tasks.universe_tasks as universe_tasks
-from app.database import Base
 from app.domain.markets import market_registry
 from app.interfaces.tasks import feature_store_tasks
-from app.models.stock import StockPrice
-from app.models.stock_universe import StockUniverse
 
 
 def test_static_export_markets_match_market_registry():
@@ -670,216 +665,6 @@ def test_run_daily_refresh_uses_static_daily_mode_and_group_rank_bypass(monkeypa
     }
 
 
-def test_refresh_static_daily_prices_filters_to_selected_market(monkeypatch):
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[StockUniverse.__table__, StockPrice.__table__])
-    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
-
-    with session_factory() as db:
-        db.add_all(
-            [
-                StockUniverse(symbol="0700.HK", market="HK", is_active=True, market_cap=100.0),
-                StockUniverse(symbol="9988.HK", market="HK", is_active=True, market_cap=90.0),
-                StockUniverse(symbol="AAPL", market="US", is_active=True, market_cap=120.0),
-                StockUniverse(symbol="BAD-W", market="HK", is_active=True, market_cap=80.0),
-            ]
-        )
-        db.add(
-            StockPrice(
-                symbol="0700.HK",
-                date=date(2026, 4, 1),
-                open=1.0,
-                high=1.0,
-                low=1.0,
-                close=1.0,
-                volume=1000,
-            )
-        )
-        db.add(
-            StockPrice(
-                symbol="AAPL",
-                date=date(2026, 4, 1),
-                open=1.0,
-                high=1.0,
-                low=1.0,
-                close=1.0,
-                volume=1000,
-            )
-        )
-        db.commit()
-
-    fetch_calls: list[dict] = []
-    stored_batches: list[dict] = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "market": market,
-                    "start_batch_size": start_batch_size,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
-    monkeypatch.setattr(export_script, "SessionLocal", session_factory)
-    monkeypatch.setattr(export_script, "BulkDataFetcher", lambda: _FakeFetcher())
-    monkeypatch.setattr(export_script, "_static_daily_price_refresh_batch_size", lambda market: 25)
-    monkeypatch.setattr(
-        export_script,
-        "get_price_cache",
-        lambda: SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
-                {
-                    "symbols": sorted(payload.keys()),
-                    "also_store_db": also_store_db,
-                    "market": market,
-                }
-            )
-        ),
-    )
-
-    result = export_script._refresh_static_daily_prices(  # noqa: SLF001 - intentional unit test coverage
-        as_of_date=date(2026, 4, 2),
-        market="HK",
-    )
-
-    assert result["market"] == "HK"
-    assert result["total_active_symbols"] == 3
-    assert result["supported_symbols"] == 2
-    assert result["skipped_unsupported_symbols"] == 1
-    assert fetch_calls == [
-        {
-            "symbols": ["0700.HK"],
-            "period": "7d",
-            "market": "HK",
-            "start_batch_size": 25,
-        },
-        {
-            "symbols": ["9988.HK"],
-            "period": "2y",
-            "market": "HK",
-            "start_batch_size": 25,
-        },
-    ]
-    assert stored_batches == [
-        {"symbols": ["0700.HK"], "also_store_db": True, "market": "HK"},
-        {"symbols": ["9988.HK"], "also_store_db": True, "market": "HK"},
-    ]
-
-
-def test_refresh_static_daily_prices_fetches_no_history_symbols_with_full_period(monkeypatch):
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[StockUniverse.__table__, StockPrice.__table__])
-    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
-
-    with session_factory() as db:
-        db.add_all(
-            [
-                StockUniverse(symbol="OLD.NS", market="IN", is_active=True, market_cap=100.0),
-                StockUniverse(symbol="NEW.NS", market="IN", is_active=True, market_cap=90.0),
-            ]
-        )
-        db.add(
-            StockPrice(
-                symbol="OLD.NS",
-                date=date(2026, 6, 3),
-                open=1.0,
-                high=1.0,
-                low=1.0,
-                close=1.0,
-                volume=1000,
-            )
-        )
-        db.commit()
-
-    fetch_calls = []
-    stored_batches = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "market": market,
-                    "start_batch_size": start_batch_size,
-                }
-            )
-            return {
-                symbol: {"price_data": SimpleNamespace(empty=False), "has_error": False}
-                for symbol in symbols
-            }
-
-    monkeypatch.setattr(export_script, "SessionLocal", session_factory)
-    monkeypatch.setattr(export_script, "BulkDataFetcher", lambda: _FakeFetcher())
-    monkeypatch.setattr(export_script, "_static_daily_price_refresh_batch_size", lambda market: 25)
-    monkeypatch.setattr(
-        export_script,
-        "get_price_cache",
-        lambda: SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
-                {
-                    "symbols": sorted(payload.keys()),
-                    "also_store_db": also_store_db,
-                    "market": market,
-                }
-            )
-        ),
-    )
-
-    result = export_script._refresh_static_daily_prices(  # noqa: SLF001 - intentional unit test coverage
-        as_of_date=date(2026, 6, 4),
-        market="IN",
-    )
-
-    assert fetch_calls == [
-        {
-            "symbols": ["OLD.NS"],
-            "period": "7d",
-            "market": "IN",
-            "start_batch_size": 25,
-        },
-        {
-            "symbols": ["NEW.NS"],
-            "period": "2y",
-            "market": "IN",
-            "start_batch_size": 25,
-        },
-    ]
-    assert stored_batches == [
-        {"symbols": ["OLD.NS"], "also_store_db": True, "market": "IN"},
-        {"symbols": ["NEW.NS"], "also_store_db": True, "market": "IN"},
-    ]
-    assert result["stale_symbols"] == 1
-    assert result["no_history_symbols"] == 1
-    assert result["yahoo_fetched_symbols"] == 2
-
-
-def test_static_daily_price_refresh_batch_size_uses_market_policy(monkeypatch):
-    import app.services.rate_budget_policy as rate_budget_policy
-
-    calls = []
-
-    class _FakePolicy:
-        def get_batch_size(self, provider, market):
-            calls.append((provider, market))
-            return 31
-
-    monkeypatch.setattr(rate_budget_policy, "get_rate_budget_policy", lambda: _FakePolicy())
-
-    assert export_script._static_daily_price_refresh_batch_size("IN") == 31  # noqa: SLF001
-    assert calls == [("yfinance", "IN")]
-    assert (
-        export_script._static_daily_price_refresh_batch_size(None)  # noqa: SLF001
-        == export_script.STATIC_DAILY_PRICE_REFRESH_BATCH_SIZE
-    )
-
-
 def test_run_daily_refresh_reenriches_ibd_metadata_after_group_rank_backfill(monkeypatch):
     """Group ranks for ``as_of_date`` are backfilled by ``_ensure_group_rank_history``
     only after ``build_daily_snapshot`` has already run its inner enrichment.
@@ -1254,6 +1039,7 @@ def test_main_passes_fallback_artifacts_dir_to_combine(monkeypatch, tmp_path):
 
 def test_main_returns_skip_code_for_market_not_trading_day(monkeypatch, tmp_path, capsys):
     export_calls: list[object] = []
+    output_dir = tmp_path / "out"
 
     monkeypatch.setattr(export_script, "prepare_runtime", lambda: None)
     monkeypatch.setattr(
@@ -1288,7 +1074,7 @@ def test_main_returns_skip_code_for_market_not_trading_day(monkeypatch, tmp_path
         [
             "export_static_site.py",
             "--output-dir",
-            str(tmp_path / "out"),
+            str(output_dir),
             "--refresh-daily",
             "--market",
             "TW",
@@ -1300,6 +1086,7 @@ def test_main_returns_skip_code_for_market_not_trading_day(monkeypatch, tmp_path
     captured = capsys.readouterr()
     assert "Static site export skipped for market TW because it is not a trading day." in captured.out
     assert export_calls == []
+    assert not (output_dir / "diagnostics" / "tw" / "snapshot-failure.json").exists()
 
 
 def test_write_market_diagnostics_records_quarantined_snapshot(tmp_path):
@@ -1334,18 +1121,10 @@ def test_write_market_diagnostics_records_quarantined_snapshot(tmp_path):
     }
 
 
-@pytest.mark.parametrize(
-    "error_message",
-    [
-        "No published feature run is available for static-site export market IN",
-        "No market-scoped published feature runs are available for static-site export",
-    ],
-)
 def test_main_returns_no_current_artifact_code_for_quarantined_selected_market(
     monkeypatch,
     tmp_path,
     capsys,
-    error_message,
 ):
     output_dir = tmp_path / "out"
 
@@ -1377,7 +1156,10 @@ def test_main_returns_no_current_artifact_code_for_quarantined_selected_market(
 
         def export(self, output_dir_arg, *_args, **_kwargs):
             shutil.rmtree(output_dir_arg, ignore_errors=True)
-            raise RuntimeError(error_message)
+            raise export_script.NoPublishedStaticMarketArtifact(
+                "No current IN artifact",
+                markets=("IN",),
+            )
 
     monkeypatch.setattr(export_script, "StaticSiteExportService", ExportRaisesNoCurrentArtifact)
     monkeypatch.setattr(
@@ -1451,320 +1233,3 @@ def test_main_reraises_unrelated_runtime_errors_for_non_ready_selected_market(
 
     with pytest.raises(RuntimeError, match="database connection dropped"):
         export_script.main()
-
-
-def _seed_in_universe(session_factory):
-    """Insert three IN tickers — two with stale prices, one fresh — into a
-    sqlite session so ``_refresh_static_daily_prices`` has work to do."""
-    with session_factory() as db:
-        db.add_all(
-            [
-                StockUniverse(symbol="RELIANCE.NS", market="IN", is_active=True, market_cap=300.0),
-                StockUniverse(symbol="TCS.NS", market="IN", is_active=True, market_cap=200.0),
-                StockUniverse(symbol="INFY.NS", market="IN", is_active=True, market_cap=100.0),
-            ]
-        )
-        # All three rows have stale prices so the refresh loop will try Yahoo
-        # for all of them — that gives us deterministic batching.
-        for symbol in ("RELIANCE.NS", "TCS.NS", "INFY.NS"):
-            db.add(
-                StockPrice(
-                    symbol=symbol,
-                    date=date(2026, 4, 1),
-                    open=1.0,
-                    high=1.0,
-                    low=1.0,
-                    close=1.0,
-                    volume=1000,
-                )
-            )
-        db.commit()
-
-
-def test_refresh_static_daily_prices_retries_in_rate_limited_failures(monkeypatch):
-    """When the first IN pass leaves rate-limited failures behind, the script
-    waits ``STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS`` and retries only the
-    throttled symbols with ``STATIC_RATE_LIMITED_RETRY_BATCH_SIZE``. The
-    refreshed count must include the recovered symbols, and permanent
-    failures must NOT be retried."""
-
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[StockUniverse.__table__, StockPrice.__table__])
-    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
-    _seed_in_universe(session_factory)
-
-    fetch_calls: list[dict] = []
-    stored_batches: list[dict] = []
-    sleeps: list[float] = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            if len(fetch_calls) == 1:
-                return {
-                    "RELIANCE.NS": {
-                        "price_data": SimpleNamespace(empty=False),
-                        "has_error": False,
-                    },
-                    "TCS.NS": {
-                        "price_data": None,
-                        "has_error": True,
-                        "error": "Too Many Requests (429)",
-                    },
-                    "INFY.NS": {
-                        "price_data": None,
-                        "has_error": True,
-                        "error": "delisted: no price data",
-                    },
-                }
-            # Retry pass recovers TCS.
-            return {
-                "TCS.NS": {
-                    "price_data": SimpleNamespace(empty=False),
-                    "has_error": False,
-                },
-            }
-
-    monkeypatch.setattr(export_script, "SessionLocal", session_factory)
-    monkeypatch.setattr(export_script, "BulkDataFetcher", lambda: _FakeFetcher())
-    monkeypatch.setattr(
-        export_script,
-        "get_price_cache",
-        lambda: SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
-                {
-                    "symbols": sorted(payload.keys()),
-                    "also_store_db": also_store_db,
-                    "market": market,
-                }
-            )
-        ),
-    )
-    monkeypatch.setattr(export_script.time, "sleep", lambda seconds: sleeps.append(seconds))
-
-    result = export_script._refresh_static_daily_prices(  # noqa: SLF001
-        as_of_date=date(2026, 4, 2),
-        market="IN",
-    )
-
-    assert sleeps == [export_script.STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS]
-    assert len(fetch_calls) == 2, "Expected one initial pass + one retry pass"
-    # Retry must only include the rate-limited symbol; the delisted INFY symbol
-    # is filtered out by ``_is_rate_limit_failure``.
-    assert fetch_calls[1]["symbols"] == ["TCS.NS"]
-    assert fetch_calls[1]["start_batch_size"] == export_script.STATIC_RATE_LIMITED_RETRY_BATCH_SIZE
-    assert fetch_calls[1]["market"] == "IN"
-    # Both the initial successful symbol and the recovered retry symbol are
-    # stored. INFY is never persisted.
-    stored_symbols = {symbol for batch in stored_batches for symbol in batch["symbols"]}
-    assert stored_symbols == {"RELIANCE.NS", "TCS.NS"}
-    assert result["rate_limited_retry"] == {
-        "attempted": 1,
-        "recovered": 1,
-        "still_failed": 0,
-        "wait_seconds": export_script.STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS,
-        "batch_size": export_script.STATIC_RATE_LIMITED_RETRY_BATCH_SIZE,
-    }
-    assert result["yahoo_fetched_symbols"] == 2  # 1 initial + 1 recovered
-    assert result["yahoo_failed_symbols"] == 1  # INFY remains permanent failure
-
-
-def test_refresh_static_daily_prices_retries_no_history_rate_limits_with_bootstrap_period(monkeypatch):
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[StockUniverse.__table__, StockPrice.__table__])
-    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
-
-    with session_factory() as db:
-        db.add(StockUniverse(symbol="NEW.NS", market="IN", is_active=True, market_cap=100.0))
-        db.commit()
-
-    fetch_calls: list[dict] = []
-    stored_batches: list[dict] = []
-    sleeps: list[float] = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append(
-                {
-                    "symbols": list(symbols),
-                    "period": period,
-                    "start_batch_size": start_batch_size,
-                    "market": market,
-                }
-            )
-            if len(fetch_calls) == 1:
-                return {
-                    "NEW.NS": {
-                        "price_data": None,
-                        "has_error": True,
-                        "error": "Too Many Requests (429)",
-                    },
-                }
-            return {
-                "NEW.NS": {
-                    "price_data": SimpleNamespace(empty=False),
-                    "has_error": False,
-                },
-            }
-
-    monkeypatch.setattr(export_script, "SessionLocal", session_factory)
-    monkeypatch.setattr(export_script, "BulkDataFetcher", lambda: _FakeFetcher())
-    monkeypatch.setattr(export_script, "_static_daily_price_refresh_batch_size", lambda market: 25)
-    monkeypatch.setattr(
-        export_script,
-        "get_price_cache",
-        lambda: SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
-                {
-                    "symbols": sorted(payload.keys()),
-                    "also_store_db": also_store_db,
-                    "market": market,
-                }
-            )
-        ),
-    )
-    monkeypatch.setattr(export_script.time, "sleep", lambda seconds: sleeps.append(seconds))
-
-    result = export_script._refresh_static_daily_prices(  # noqa: SLF001
-        as_of_date=date(2026, 6, 4),
-        market="IN",
-    )
-
-    assert sleeps == [export_script.STATIC_RATE_LIMITED_RETRY_WAIT_SECONDS]
-    assert fetch_calls == [
-        {
-            "symbols": ["NEW.NS"],
-            "period": "2y",
-            "start_batch_size": 25,
-            "market": "IN",
-        },
-        {
-            "symbols": ["NEW.NS"],
-            "period": "2y",
-            "start_batch_size": export_script.STATIC_RATE_LIMITED_RETRY_BATCH_SIZE,
-            "market": "IN",
-        },
-    ]
-    assert stored_batches == [
-        {"symbols": ["NEW.NS"], "also_store_db": True, "market": "IN"},
-    ]
-    assert result["rate_limited_retry"]["recovered"] == 1
-    assert result["yahoo_fetched_symbols"] == 1
-    assert result["yahoo_failed_symbols"] == 0
-
-
-def test_refresh_static_daily_prices_skips_retry_for_non_in_markets(monkeypatch):
-    """The retry path is gated to markets in
-    ``STATIC_RATE_LIMITED_RETRY_MARKETS`` so it does not change behavior for
-    US/HK/JP/etc. Rate-limited failures from those markets fall through to
-    the existing DQ gate."""
-
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[StockUniverse.__table__, StockPrice.__table__])
-    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
-
-    with session_factory() as db:
-        db.add(StockUniverse(symbol="0700.HK", market="HK", is_active=True, market_cap=100.0))
-        db.add(
-            StockPrice(
-                symbol="0700.HK",
-                date=date(2026, 4, 1),
-                open=1.0,
-                high=1.0,
-                low=1.0,
-                close=1.0,
-                volume=1000,
-            )
-        )
-        db.commit()
-
-    fetch_calls: list[dict] = []
-    sleeps: list[float] = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append({"symbols": list(symbols), "market": market})
-            return {
-                symbol: {
-                    "price_data": None,
-                    "has_error": True,
-                    "error": "429 rate limited",
-                }
-                for symbol in symbols
-            }
-
-    monkeypatch.setattr(export_script, "SessionLocal", session_factory)
-    monkeypatch.setattr(export_script, "BulkDataFetcher", lambda: _FakeFetcher())
-    monkeypatch.setattr(
-        export_script,
-        "get_price_cache",
-        lambda: SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-    )
-    monkeypatch.setattr(export_script.time, "sleep", lambda seconds: sleeps.append(seconds))
-
-    result = export_script._refresh_static_daily_prices(  # noqa: SLF001
-        as_of_date=date(2026, 4, 2),
-        market="HK",
-    )
-
-    assert len(fetch_calls) == 1, "HK must not trigger the rate-limited retry"
-    assert sleeps == [], "HK must not wait for a retry"
-    assert result["rate_limited_retry"] == {
-        "attempted": 0,
-        "recovered": 0,
-        "still_failed": 0,
-        "wait_seconds": 0,
-        "batch_size": export_script.STATIC_RATE_LIMITED_RETRY_BATCH_SIZE,
-    }
-
-
-def test_refresh_static_daily_prices_skips_retry_when_no_rate_limited_failures(monkeypatch):
-    """If the first IN pass succeeds (or all failures are permanent), the
-    retry path is a no-op — no sleep, no extra Yahoo call."""
-
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[StockUniverse.__table__, StockPrice.__table__])
-    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
-    _seed_in_universe(session_factory)
-
-    fetch_calls: list[dict] = []
-    sleeps: list[float] = []
-
-    class _FakeFetcher:
-        def fetch_prices_in_batches(self, symbols, period="2y", start_batch_size=None, market=None):
-            fetch_calls.append({"symbols": list(symbols)})
-            # All permanent failures: delisted/unknown symbol.
-            return {
-                symbol: {
-                    "price_data": None,
-                    "has_error": True,
-                    "error": "delisted: no price data",
-                }
-                for symbol in symbols
-            }
-
-    monkeypatch.setattr(export_script, "SessionLocal", session_factory)
-    monkeypatch.setattr(export_script, "BulkDataFetcher", lambda: _FakeFetcher())
-    monkeypatch.setattr(
-        export_script,
-        "get_price_cache",
-        lambda: SimpleNamespace(store_batch_in_cache=lambda *_args, **_kwargs: None),
-    )
-    monkeypatch.setattr(export_script.time, "sleep", lambda seconds: sleeps.append(seconds))
-
-    result = export_script._refresh_static_daily_prices(  # noqa: SLF001
-        as_of_date=date(2026, 4, 2),
-        market="IN",
-    )
-
-    assert len(fetch_calls) == 1, "Permanent failures must not trigger a retry"
-    assert sleeps == []
-    assert result["rate_limited_retry"]["attempted"] == 0
-    assert result["yahoo_failed_symbols"] == 3
