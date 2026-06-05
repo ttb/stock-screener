@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -62,6 +62,22 @@ const manifest = {
       },
     },
   },
+};
+
+const leadersPresetScreen = {
+  id: 'leaders_in_leading_groups',
+  name: 'Leaders in Leading Groups',
+  short_name: 'Leaders',
+  description: 'Strong report-card stocks in top 40 IBD groups',
+  tier: 2,
+  filters: {
+    ibdGroupRank: { min: null, max: 40 },
+    rsRating: { min: 80, max: null },
+    compositeScore: { min: 70, max: null },
+    minVolume: 100_000_000,
+  },
+  sort_by: 'composite_score',
+  sort_order: 'desc',
 };
 
 const makeLeaderRow = (index, overrides = {}) => ({
@@ -138,6 +154,7 @@ describe('StaticHomePage', () => {
       chunks: [
         { path: 'markets/us/scan/chunks/chunk-0001.json' },
       ],
+      preset_screens: [leadersPresetScreen],
     };
     scanChunkPayload = {
       rows: [
@@ -285,6 +302,7 @@ describe('StaticHomePage', () => {
 
   it('shows top 20 leaders in leading groups after top scan candidates with leader-scoped chart navigation', async () => {
     const leaderRows = Array.from({ length: 21 }, (_, index) => makeLeaderRow(index + 1));
+    leaderRows[1] = makeLeaderRow(2, { scan_mode: 'ipo_weighted' });
     const rejectedRows = [
       makeLeaderRow(31, { symbol: 'WEAKRS', rs_rating: 79 }),
       makeLeaderRow(32, { symbol: 'LATEGROUP', ibd_group_rank: 41 }),
@@ -320,6 +338,7 @@ describe('StaticHomePage', () => {
           chunks: [
             { path: 'markets/us/scan/chunks/chunk-0001.json' },
           ],
+          preset_screens: [leadersPresetScreen],
         };
       }
 
@@ -343,15 +362,17 @@ describe('StaticHomePage', () => {
     expect(
       leadersHeading.compareDocumentPosition(topGroupsHeading) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
-    expect(screen.getAllByText('LEAD01').length).toBeGreaterThan(0);
-    expect(screen.queryByText('LEAD21')).not.toBeInTheDocument();
-    expect(screen.queryByText('WEAKRS')).not.toBeInTheDocument();
-    expect(screen.queryByText('LATEGROUP')).not.toBeInTheDocument();
-    expect(screen.queryByText('LOWSCORE')).not.toBeInTheDocument();
-    expect(screen.queryByText('THINVOL')).not.toBeInTheDocument();
+    const leadersSection = screen.getByTestId('leaders-in-leading-groups-section');
+    expect(within(leadersSection).getByText('LEAD01')).toBeInTheDocument();
+    expect(within(leadersSection).getByText('LEAD02')).toBeInTheDocument();
+    expect(within(leadersSection).queryByText('LEAD21')).not.toBeInTheDocument();
+    expect(within(leadersSection).queryByText('WEAKRS')).not.toBeInTheDocument();
+    expect(within(leadersSection).queryByText('LATEGROUP')).not.toBeInTheDocument();
+    expect(within(leadersSection).queryByText('LOWSCORE')).not.toBeInTheDocument();
+    expect(within(leadersSection).queryByText('THINVOL')).not.toBeInTheDocument();
 
     const user = userEvent.setup();
-    await user.click(screen.getAllByText('LEAD01').at(-1));
+    await user.click(within(leadersSection).getByText('LEAD01'));
 
     await waitFor(() => {
       const props = modalSpy.mock.calls.at(-1)?.[0];

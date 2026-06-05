@@ -213,8 +213,14 @@ function StaticScanPage() {
     [filters, hydratedRows, hydrationComplete]
   );
   const sortedRows = useMemo(
-    () => (hydrationComplete ? sortStaticScanRows(filteredRows, sortBy, sortOrder) : filteredRows),
-    [filteredRows, hydrationComplete, sortBy, sortOrder]
+    () => (
+      hydrationComplete
+        ? sortStaticScanRows(filteredRows, sortBy, sortOrder, {
+          prioritizeCompositeScanMode: !activeScreenId,
+        })
+        : filteredRows
+    ),
+    [activeScreenId, filteredRows, hydrationComplete, sortBy, sortOrder]
   );
   const pagedRows = useMemo(
     () => (hydrationComplete ? paginateStaticScanRows(sortedRows, page, perPage) : filteredRows),

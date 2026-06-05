@@ -226,6 +226,16 @@ describe('static scan client', () => {
     expect(sorted.map((row) => row.symbol)).toEqual(['FULL80', 'FULL70', 'IPO95', 'NEW1']);
   });
 
+  it('can sort composite score exactly for preset-defined rankings', () => {
+    const sorted = sortStaticScanRows([
+      { symbol: 'IPO95', scan_mode: 'ipo_weighted', composite_score: 95 },
+      { symbol: 'FULL80', scan_mode: 'full', composite_score: 80 },
+      { symbol: 'FULL70', scan_mode: 'full', composite_score: 70 },
+    ], 'composite_score', 'desc', { prioritizeCompositeScanMode: false });
+
+    expect(sorted.map((row) => row.symbol)).toEqual(['IPO95', 'FULL80', 'FULL70']);
+  });
+
   it('keeps null composite scores last within the same scan-mode bucket for desc sorting', () => {
     const sorted = sortStaticScanRows([
       { symbol: 'FULLNULL', scan_mode: 'full', composite_score: null },

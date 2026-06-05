@@ -200,10 +200,18 @@ export const filterStaticScanRows = (rows, filters) => {
   });
 };
 
-export const sortStaticScanRows = (rows, sortBy, sortOrder = 'desc') => {
+export const sortStaticScanRows = (
+  rows,
+  sortBy,
+  sortOrder = 'desc',
+  { prioritizeCompositeScanMode = true } = {},
+) => {
   const direction = sortOrder === 'asc' ? 1 : -1;
+  const useCompositeModePriority = prioritizeCompositeScanMode &&
+    sortBy === 'composite_score' &&
+    sortOrder === 'desc';
   return [...rows].sort((left, right) => {
-    if (sortBy === 'composite_score' && sortOrder === 'desc') {
+    if (useCompositeModePriority) {
       const modeComparison = compareValues(
         getScanModeSortPriority(left),
         getScanModeSortPriority(right),
@@ -226,7 +234,7 @@ export const sortStaticScanRows = (rows, sortBy, sortOrder = 'desc') => {
     if (comparison !== 0) {
       return comparison * direction;
     }
-    if (sortBy === 'composite_score') {
+    if (prioritizeCompositeScanMode && sortBy === 'composite_score') {
       const modeComparison = compareValues(
         getScanModeSortPriority(left),
         getScanModeSortPriority(right),

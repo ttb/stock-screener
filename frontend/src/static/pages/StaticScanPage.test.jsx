@@ -320,9 +320,9 @@ describe('StaticScanPage', () => {
             run_id: 9,
             sort: { field: 'composite_score', order: 'desc' },
             default_page_size: 50,
-            rows_total: 2,
+            rows_total: 3,
             default_filters: { minVolume: 100000000 },
-            default_filtered_rows_total: 2,
+            default_filtered_rows_total: 3,
             filter_options: {
               ibd_industries: ['Semiconductors', 'Software'],
               gics_sectors: ['Technology'],
@@ -336,6 +336,16 @@ describe('StaticScanPage', () => {
                 rs_rating: 91,
                 volume: 150000000,
                 ibd_group_rank: 12,
+                scan_mode: 'full',
+              },
+              {
+                symbol: 'IPOLEAD',
+                company_name: 'IPO Leader Corp',
+                composite_score: 98,
+                rs_rating: 94,
+                volume: 150000000,
+                ibd_group_rank: 10,
+                scan_mode: 'ipo_weighted',
               },
               {
                 symbol: 'LATE',
@@ -393,12 +403,12 @@ describe('StaticScanPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('Leaders (1)')).toBeInTheDocument();
+    expect(await screen.findByText('Leaders (2)')).toBeInTheDocument();
     const user = userEvent.setup();
-    await user.click(screen.getByText('Leaders (1)'));
+    await user.click(screen.getByText('Leaders (2)'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('results-table-rows')).toHaveTextContent('LEAD');
+      expect(screen.getByTestId('results-table-rows')).toHaveTextContent('IPOLEAD,LEAD');
       expect(screen.getByTestId('results-table-rows')).not.toHaveTextContent('LATE');
     });
   });
