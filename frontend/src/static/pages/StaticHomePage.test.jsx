@@ -64,21 +64,20 @@ const manifest = {
   },
 };
 
-const leadersPresetScreen = {
+const makeLeadersPresetScreen = (minVolume = 100_000_000) => ({
   id: 'leaders_in_leading_groups',
   name: 'Leaders in Leading Groups',
   short_name: 'Leaders',
   description: 'Strong report-card stocks in top 40 IBD groups',
   tier: 2,
   filters: {
+    minVolume,
     ibdGroupRank: { min: null, max: 40 },
     rsRating: { min: 80, max: null },
-    compositeScore: { min: 70, max: null },
-    minVolume: 100_000_000,
   },
   sort_by: 'composite_score',
   sort_order: 'desc',
-};
+});
 
 const makeLeaderRow = (index, overrides = {}) => ({
   symbol: `LEAD${String(index).padStart(2, '0')}`,
@@ -137,6 +136,7 @@ describe('StaticHomePage', () => {
       top_groups: [],
     };
     scanManifestPayload = {
+      default_filters: { minVolume: 100_000_000 },
       initial_rows: [
         {
           symbol: 'NVDA',
@@ -154,7 +154,7 @@ describe('StaticHomePage', () => {
       chunks: [
         { path: 'markets/us/scan/chunks/chunk-0001.json' },
       ],
-      preset_screens: [leadersPresetScreen],
+      preset_screens: [makeLeadersPresetScreen()],
     };
     scanChunkPayload = {
       rows: [
@@ -300,6 +300,97 @@ describe('StaticHomePage', () => {
     });
   });
 
+  it('uses the static scan manifest default volume for Daily top candidates', async () => {
+    scanManifestPayload.default_filters = { minVolume: 1_300_000 };
+    scanManifestPayload.preset_screens = [makeLeadersPresetScreen(1_300_000)];
+    scanManifestPayload.initial_rows = [
+      {
+        symbol: 'LOCALPASS',
+        company_name: 'Local Liquid',
+        composite_score: 88.0,
+        current_price: 12,
+        rating: 'Buy',
+        volume: 5_000_000,
+        market_cap: 2_000_000_000,
+        currency: 'SGD',
+        price_sparkline_data: null,
+        rs_sparkline_data: null,
+      },
+      {
+        symbol: 'TOOTHIN',
+        company_name: 'Too Thin',
+        composite_score: 99.0,
+        current_price: 8,
+        rating: 'Buy',
+        volume: 900_000,
+        market_cap: 2_000_000_000,
+        currency: 'SGD',
+        price_sparkline_data: null,
+        rs_sparkline_data: null,
+      },
+    ];
+    scanManifestPayload.chunks = [];
+
+    renderWithProviders(<StaticHomePage />);
+
+    expect(await screen.findByText('LOCALPASS')).toBeInTheDocument();
+    expect(screen.queryByText('TOOTHIN')).not.toBeInTheDocument();
+  });
+
+  it('uses market liquidity defaults and composite ranking for leaders in leading groups', async () => {
+    scanManifestPayload.default_filters = { minVolume: 1_300_000 };
+    scanManifestPayload.preset_screens = [makeLeadersPresetScreen(1_300_000)];
+    scanManifestPayload.initial_rows = [
+      makeLeaderRow(1, {
+        symbol: 'LOCALLEAD',
+        composite_score: 64.23,
+        rs_rating: 94.94,
+        volume: 2_000_000,
+        ibd_group_rank: 26,
+      }),
+      makeLeaderRow(2, {
+        symbol: 'THINLEAD',
+        composite_score: 65.0,
+        rs_rating: 99,
+        volume: 900_000,
+        ibd_group_rank: 10,
+      }),
+    ];
+    scanManifestPayload.chunks = [];
+
+    renderWithProviders(<StaticHomePage />);
+
+    const leadersSection = await screen.findByTestId('leaders-in-leading-groups-section');
+    expect(
+      within(leadersSection).getByText('Top 20 by report card: group rank <=40, RS >=80, dollar volume >= 1,300,000.')
+    ).toBeInTheDocument();
+    expect(within(leadersSection).getByText('LOCALLEAD')).toBeInTheDocument();
+    expect(within(leadersSection).queryByText('THINLEAD')).not.toBeInTheDocument();
+  });
+
+  it('omits the leaders liquidity subtitle when the resolved preset has no volume floor', async () => {
+    scanManifestPayload.default_filters = { minVolume: null };
+    scanManifestPayload.preset_screens = [makeLeadersPresetScreen(null)];
+    scanManifestPayload.initial_rows = [
+      makeLeaderRow(1, {
+        symbol: 'NOFLOOR',
+        volume: 1,
+        ibd_group_rank: 10,
+        rs_rating: 90,
+      }),
+    ];
+    scanManifestPayload.chunks = [];
+
+    renderWithProviders(<StaticHomePage />);
+
+    const leadersSection = await screen.findByTestId('leaders-in-leading-groups-section');
+    expect(
+      within(leadersSection).getByText('Top 20 by report card: group rank <=40, RS >=80.')
+    ).toBeInTheDocument();
+    expect(within(leadersSection).queryByText(/dollar volume >=/i)).not.toBeInTheDocument();
+    expect(within(leadersSection).getByText('NOFLOOR')).toBeInTheDocument();
+  });
+
   it('shows top 20 leaders in leading groups after top scan candidates with leader-scoped chart navigation', async () => {
     const leaderRows = Array.from({ length: 21 }, (_, index) => makeLeaderRow(index + 1));
     // Verifies preset sorting stays exact and does not demote IPO-weighted rows behind lower-scoring full rows.
@@ -339,7 +430,7 @@ describe('StaticHomePage', () => {
           chunks: [
             { path: 'markets/us/scan/chunks/chunk-0001.json' },
           ],
-          preset_screens: [leadersPresetScreen],
+          preset_screens: [makeLeadersPresetScreen()],
         };
       }
 

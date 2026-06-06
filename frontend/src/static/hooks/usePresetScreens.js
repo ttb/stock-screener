@@ -3,10 +3,14 @@ import { applyScanFilterDefaults } from '../../features/scan/defaultFilters';
 import { filterStaticScanRows } from '../scanClient';
 
 export function buildFiltersFromPreset(screen) {
-  return applyScanFilterDefaults(screen.filters);
+  return applyScanFilterDefaults(screen?.filters ?? {});
 }
 
-export function usePresetScreens({ screens, allRows, hydrationComplete }) {
+export function usePresetScreens({
+  screens,
+  allRows,
+  hydrationComplete,
+}) {
   const [activeScreenId, setActiveScreenId] = useState(null);
 
   const matchCounts = useMemo(() => {

@@ -66,9 +66,13 @@ function StaticScanPage() {
     }),
     []
   );
-  const manifestDefaultFilters = useMemo(
-    () => applyScanFilterDefaults(scanManifestQuery.data?.default_filters),
+  const manifestDefaultFilterValues = useMemo(
+    () => scanManifestQuery.data?.default_filters ?? {},
     [scanManifestQuery.data?.default_filters]
+  );
+  const manifestDefaultFilters = useMemo(
+    () => applyScanFilterDefaults(manifestDefaultFilterValues),
+    [manifestDefaultFilterValues]
   );
   const manifestDefaultSortBy = scanManifestQuery.data?.sort?.field ?? 'composite_score';
   const manifestDefaultSortOrder = scanManifestQuery.data?.sort?.order ?? 'desc';
@@ -194,7 +198,13 @@ function StaticScanPage() {
         setSortOrder(screen.sort_order);
       }
     }
-  }, [presetScreens, manifestDefaultFilters, manifestDefaultSortBy, manifestDefaultSortOrder, setActiveScreenId]);
+  }, [
+    presetScreens,
+    manifestDefaultFilters,
+    manifestDefaultSortBy,
+    manifestDefaultSortOrder,
+    setActiveScreenId,
+  ]);
 
   const filterKey = useMemo(() => getStableFilterKey(filters), [filters]);
   useEffect(() => {

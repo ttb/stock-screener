@@ -1,13 +1,14 @@
 """Preset stock screen definitions for the static site.
 
 Each preset is a named filter configuration using the frontend's camelCase
-filter key names (matching scanClient.js and defaultFilters.js). Presets are
-embedded in the scan manifest and consumed client-side — no backend scanner
-logic is involved at runtime.
+filter key names (matching scanClient.js and defaultFilters.js). Static export
+materializes market defaults into these definitions before embedding them in
+the scan manifest, so static-site consumers can use screen["filters"] directly.
 """
 
 from __future__ import annotations
 
+import copy
 import heapq
 
 RANGE_FILTER_TO_FIELD: dict[str, str] = {
@@ -218,8 +219,6 @@ PRESET_SCREENS: list[dict] = [
         "filters": {
             "ibdGroupRank": {"min": None, "max": 40},
             "rsRating": {"min": 80, "max": None},
-            "compositeScore": {"min": 70, "max": None},
-            "minVolume": 100_000_000,
         },
         "sort_by": "composite_score",
         "sort_order": "desc",
@@ -454,9 +453,41 @@ PRESET_SCREENS: list[dict] = [
 ]
 
 
+STATIC_PRESET_DEFAULT_FILTER_KEYS: dict[str, tuple[str, ...]] = {
+    "leaders_in_leading_groups": ("minVolume",),
+}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def resolve_preset_screens_for_defaults(
+    presets: list[dict],
+    default_filters: dict | None = None,
+) -> list[dict]:
+    """Return static preset screens with market defaults materialized.
+
+    Static manifests should be self-contained: consumers should be able to use
+    screen["filters"] directly without knowing which defaults the market uses.
+    """
+
+    defaults = default_filters or {}
+    resolved: list[dict] = []
+    for preset in presets:
+        screen = copy.deepcopy(preset)
+        inherited = {
+            key: defaults[key]
+            for key in STATIC_PRESET_DEFAULT_FILTER_KEYS.get(preset.get("id"), ())
+            if key in defaults
+        }
+        screen["filters"] = {
+            **inherited,
+            **(screen.get("filters") or {}),
+        }
+        resolved.append(screen)
+    return resolved
+
 
 def _matches_preset_filters(row: dict, filters: dict) -> bool:
     """Check if a serialized scan row matches a preset's filter criteria.
@@ -471,6 +502,8 @@ def _matches_preset_filters(row: dict, filters: dict) -> bool:
             continue
 
         if key in SCALAR_FILTER_TO_FIELD:
+            if value is None:
+                continue
             field = SCALAR_FILTER_TO_FIELD[key]
             row_val = row.get(field)
             if row_val is None or row_val < value:
@@ -496,6 +529,8 @@ def _matches_preset_filters(row: dict, filters: dict) -> bool:
             field = RANGE_FILTER_TO_FIELD[key]
             row_val = row.get(field)
             if isinstance(value, dict):
+                if value.get("min") is None and value.get("max") is None:
+                    continue
                 if row_val is None:
                     return False
                 if value.get("min") is not None and row_val < value["min"]:
@@ -520,9 +555,10 @@ def get_preset_chart_symbols(
 
     symbols: set[str] = set()
     for preset in presets:
+        filters = preset.get("filters") or {}
         matching = [
             row for row in serialized_rows
-            if _matches_preset_filters(row, preset["filters"])
+            if _matches_preset_filters(row, filters)
         ]
         sort_field = preset.get("sort_by", "composite_score")
         descending = preset.get("sort_order", "desc") == "desc"
