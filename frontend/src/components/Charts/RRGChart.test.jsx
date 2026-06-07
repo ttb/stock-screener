@@ -51,6 +51,13 @@ describe('RRGChart', () => {
     expect(screen.getByText(/Sectors/)).toBeInTheDocument();
   });
 
+  it('renders a scope-aware filter control', () => {
+    const { rerender } = renderWithProviders(<RRGChart data={sampleData} />);
+    expect(screen.getByLabelText(/Filter groups/i)).toBeInTheDocument();
+    rerender(<RRGChart data={{ ...sampleData, scope: 'sectors' }} />);
+    expect(screen.getByLabelText(/Filter sectors/i)).toBeInTheDocument();
+  });
+
   it('shows a spinner while loading', () => {
     renderWithProviders(<RRGChart data={null} isLoading />);
     expect(screen.getByRole('progressbar')).toBeInTheDocument();

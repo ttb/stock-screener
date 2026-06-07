@@ -9,11 +9,15 @@
  *     Lagging   (x<100,  y<100)   red
  *     Improving (x<100,  y>=100)  blue
  *
+ * Each tail vertex is a hoverable dot (date + weeks-ago), the trace is graduated
+ * oldest->newest, and direction arrows point the way each series is travelling.
+ * A filter narrows the plot to the groups/sectors of interest.
+ *
  * Coordinates are pre-computed server-side (see backend rrg_service.py), so this
  * component is purely presentational. It is shared by the live Group Rankings
  * page and the static-site Groups page — both pass the same `{ groups: [...] }`.
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ScatterChart,
   Scatter,
@@ -26,8 +30,11 @@ import {
   ReferenceLine,
   ReferenceArea,
   ResponsiveContainer,
+  Customized,
 } from 'recharts';
 import {
+  Autocomplete,
+  TextField,
   Box,
   Card,
   CardContent,
@@ -36,6 +43,12 @@ import {
   Alert,
 } from '@mui/material';
 import { QUADRANT_COLORS, QUADRANT_FILLS, quadrantColor } from './rrgColors';
+import { buildTailPoints } from './rrgTrace';
+
+// Per-segment arrows render when at most this many series are shown; above it
+// (e.g. the unfiltered ~197-group view) only the most-recent segment gets one,
+// to keep the plot readable. Filter down to see the full per-week direction.
+const ARROW_DETAIL_LIMIT = 20;
 
 /** Symmetric axis bounds around the 100/100 cross, padded to the data extent. */
 const computeBound = (groups) => {
@@ -47,6 +60,70 @@ const computeBound = (groups) => {
     }
   }
   return Math.min(20, Math.ceil(maxAbs) + 1);
+};
+
+/** Graduated tail vertex: faint/small when old, brighter toward the head. The
+ *  head itself is drawn by the larger "current" dot, so it's skipped here. */
+const TailDot = ({ cx, cy, payload }) => {
+  if (cx == null || cy == null || payload?.isHead) return null;
+  const t = payload.t ?? 0.5;
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      r={2 + 2.5 * t}
+      fill={quadrantColor(payload.quadrant)}
+      fillOpacity={0.25 + 0.5 * t}
+    />
+  );
+};
+
+const ArrowHead = ({ x, y, angle, color }) => {
+  const size = 5;
+  return (
+    <polygon
+      points={`${-size},${-size * 0.6} ${size},0 ${-size},${size * 0.6}`}
+      transform={`translate(${x},${y}) rotate(${(angle * 180) / Math.PI})`}
+      fill={color}
+      fillOpacity={0.9}
+    />
+  );
+};
+
+/** Recharts <Customized> child: draws direction arrows in pixel space using the
+ *  axis scales. Degrades to nothing if scales aren't ready (e.g. SSR/jsdom). */
+const TailArrows = ({ shown, perSegment, xAxisMap, yAxisMap }) => {
+  const xAxis = xAxisMap && xAxisMap[Object.keys(xAxisMap)[0]];
+  const yAxis = yAxisMap && yAxisMap[Object.keys(yAxisMap)[0]];
+  const xScale = xAxis?.scale;
+  const yScale = yAxis?.scale;
+  if (typeof xScale !== 'function' || typeof yScale !== 'function') return null;
+
+  const arrows = [];
+  shown.forEach((g) => {
+    const tail = g.tail || [];
+    if (tail.length < 2) return;
+    const from = perSegment ? 1 : tail.length - 1;
+    for (let i = from; i < tail.length; i += 1) {
+      const a = tail[i - 1];
+      const b = tail[i];
+      const x1 = xScale(a.x);
+      const y1 = yScale(a.y);
+      const x2 = xScale(b.x);
+      const y2 = yScale(b.y);
+      if ([x1, y1, x2, y2].some((v) => v == null || Number.isNaN(v))) continue;
+      arrows.push(
+        <ArrowHead
+          key={`${g.industry_group}-${i}`}
+          x={(x1 + x2) / 2}
+          y={(y1 + y2) / 2}
+          angle={Math.atan2(y2 - y1, x2 - x1)}
+          color={quadrantColor(g.quadrant)}
+        />,
+      );
+    }
+  });
+  return <g>{arrows}</g>;
 };
 
 const RRGTooltip = ({ active, payload }) => {
@@ -72,9 +149,16 @@ const RRGTooltip = ({ active, payload }) => {
         {g.quadrant}
         {g.is_provisional ? ' · provisional' : ''}
       </Typography>
-      <Typography variant="body2" sx={{ mt: 0.5 }}>
-        Rank: {g.rank ?? '—'} · RS: {g.avg_rs_rating != null ? g.avg_rs_rating.toFixed(1) : '—'}
-      </Typography>
+      {g.isCurrent ? (
+        <Typography variant="body2" sx={{ mt: 0.5 }}>
+          Rank: {g.rank ?? '—'} · RS: {g.avg_rs_rating != null ? g.avg_rs_rating.toFixed(1) : '—'}
+        </Typography>
+      ) : (
+        <Typography variant="body2" sx={{ mt: 0.5, color: 'text.secondary' }}>
+          {g.weeksAgo === 0 ? 'Current' : `${g.weeksAgo}w ago`}
+          {g.date ? ` · ${g.date}` : ''}
+        </Typography>
+      )}
       <Typography variant="body2" sx={{ color: 'text.secondary' }}>
         Ratio {g.x?.toFixed(1)} · Momentum {g.y?.toFixed(1)}
       </Typography>
@@ -87,15 +171,34 @@ const RRGTooltip = ({ active, payload }) => {
  */
 export default function RRGChart({ data, isLoading, error, onSelectGroup, height = 560 }) {
   const groups = useMemo(() => (data?.groups ?? []), [data]);
+  const asOf = data?.date ?? null;
+  const scopeLabel = data?.scope === 'sectors' ? 'Sectors' : 'Groups';
 
-  const bound = useMemo(() => computeBound(groups), [groups]);
+  const [selected, setSelected] = useState([]);
+  // Clear the filter when the dataset identity changes (scope/market switch),
+  // since the option names no longer apply.
+  useEffect(() => {
+    setSelected([]);
+  }, [data?.scope, data?.market]);
+
+  const allNames = useMemo(() => groups.map((g) => g.industry_group), [groups]);
+  const shown = useMemo(() => {
+    if (!selected.length) return groups;
+    const set = new Set(selected);
+    return groups.filter((g) => set.has(g.industry_group));
+  }, [groups, selected]);
+
+  const bound = useMemo(() => computeBound(shown.length ? shown : groups), [shown, groups]);
   const lo = 100 - bound;
   const hi = 100 + bound;
 
-  // Flatten current points (each carries the full group for tooltip/click).
   const currentPoints = useMemo(
-    () => groups.map((g) => ({ ...g, ...g.current })),
-    [groups],
+    () => shown.map((g) => ({ ...g, ...g.current, isCurrent: true })),
+    [shown],
+  );
+  const tails = useMemo(
+    () => shown.map((g) => ({ name: g.industry_group, color: quadrantColor(g.quadrant), points: buildTailPoints(g, asOf) })),
+    [shown, asOf],
   );
 
   if (isLoading) {
@@ -135,77 +238,109 @@ export default function RRGChart({ data, isLoading, error, onSelectGroup, height
   return (
     <Card>
       <CardContent>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          Relative Rotation Graph — {data?.scope === 'sectors' ? 'Sectors' : 'Groups'}
-          {data?.date ? ` · ${data.date}` : ''}
-        </Typography>
-        <ResponsiveContainer width="100%" height={height}>
-          <ScatterChart margin={{ top: 20, right: 30, bottom: 20, left: 10 }}>
-            <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-
-            {/* Quadrant backdrops */}
-            <ReferenceArea x1={100} x2={hi} y1={100} y2={hi} fill={QUADRANT_FILLS.Leading} fillOpacity={1}
-              label={{ value: 'Leading', position: 'insideTopRight', fill: QUADRANT_COLORS.Leading, fontSize: 12 }} />
-            <ReferenceArea x1={100} x2={hi} y1={lo} y2={100} fill={QUADRANT_FILLS.Weakening} fillOpacity={1}
-              label={{ value: 'Weakening', position: 'insideBottomRight', fill: QUADRANT_COLORS.Weakening, fontSize: 12 }} />
-            <ReferenceArea x1={lo} x2={100} y1={lo} y2={100} fill={QUADRANT_FILLS.Lagging} fillOpacity={1}
-              label={{ value: 'Lagging', position: 'insideBottomLeft', fill: QUADRANT_COLORS.Lagging, fontSize: 12 }} />
-            <ReferenceArea x1={lo} x2={100} y1={100} y2={hi} fill={QUADRANT_FILLS.Improving} fillOpacity={1}
-              label={{ value: 'Improving', position: 'insideTopLeft', fill: QUADRANT_COLORS.Improving, fontSize: 12 }} />
-
-            <ReferenceLine x={100} stroke="#9e9e9e" strokeDasharray="4 4" />
-            <ReferenceLine y={100} stroke="#9e9e9e" strokeDasharray="4 4" />
-
-            <XAxis
-              type="number"
-              dataKey="x"
-              name="RS-Ratio"
-              domain={[lo, hi]}
-              tickCount={5}
-              label={{ value: 'RS-Ratio', position: 'insideBottom', offset: -10, fontSize: 12 }}
-            />
-            <YAxis
-              type="number"
-              dataKey="y"
-              name="RS-Momentum"
-              domain={[lo, hi]}
-              tickCount={5}
-              label={{ value: 'RS-Momentum', angle: -90, position: 'insideLeft', fontSize: 12 }}
-            />
-            <ZAxis type="number" dataKey="num_stocks" range={[60, 500]} name="Constituents" />
-            <Tooltip content={<RRGTooltip />} cursor={{ strokeDasharray: '3 3' }} />
-
-            {/* Tails: one connected polyline per group, dots hidden. */}
-            {groups.map((g) => (
-              <Scatter
-                key={`tail-${g.industry_group}`}
-                data={g.tail}
-                line={{ stroke: quadrantColor(g.quadrant), strokeWidth: 1.25, strokeOpacity: 0.5 }}
-                lineType="joint"
-                shape={() => null}
-                isAnimationActive={false}
-                legendType="none"
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1 }}>
+          <Typography variant="subtitle2">
+            Relative Rotation Graph — {scopeLabel}
+            {asOf ? ` · ${asOf}` : ''}
+          </Typography>
+          <Box sx={{ flexGrow: 1 }} />
+          <Autocomplete
+            multiple
+            size="small"
+            options={allNames}
+            value={selected}
+            onChange={(_e, v) => setSelected(v)}
+            limitTags={3}
+            disableCloseOnSelect
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label={`Filter ${scopeLabel.toLowerCase()}`}
+                placeholder={selected.length ? '' : 'All shown'}
               />
-            ))}
+            )}
+            sx={{ width: 360, maxWidth: '100%' }}
+          />
+        </Box>
 
-            {/* Current dots — colored by quadrant, clickable. */}
-            <Scatter
-              data={currentPoints}
-              isAnimationActive={false}
-              onClick={(pt) => onSelectGroup?.(pt?.industry_group)}
-              cursor="pointer"
-            >
-              {currentPoints.map((p) => (
-                <Cell
-                  key={`dot-${p.industry_group}`}
-                  fill={quadrantColor(p.quadrant)}
-                  fillOpacity={p.is_provisional ? 0.35 : 0.9}
-                  stroke={quadrantColor(p.quadrant)}
+        {shown.length === 0 ? (
+          <Alert severity="info">No {scopeLabel.toLowerCase()} match the current filter.</Alert>
+        ) : (
+          <ResponsiveContainer width="100%" height={height}>
+            <ScatterChart margin={{ top: 20, right: 30, bottom: 20, left: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+
+              {/* Quadrant backdrops */}
+              <ReferenceArea x1={100} x2={hi} y1={100} y2={hi} fill={QUADRANT_FILLS.Leading} fillOpacity={1}
+                label={{ value: 'Leading', position: 'insideTopRight', fill: QUADRANT_COLORS.Leading, fontSize: 12 }} />
+              <ReferenceArea x1={100} x2={hi} y1={lo} y2={100} fill={QUADRANT_FILLS.Weakening} fillOpacity={1}
+                label={{ value: 'Weakening', position: 'insideBottomRight', fill: QUADRANT_COLORS.Weakening, fontSize: 12 }} />
+              <ReferenceArea x1={lo} x2={100} y1={lo} y2={100} fill={QUADRANT_FILLS.Lagging} fillOpacity={1}
+                label={{ value: 'Lagging', position: 'insideBottomLeft', fill: QUADRANT_COLORS.Lagging, fontSize: 12 }} />
+              <ReferenceArea x1={lo} x2={100} y1={100} y2={hi} fill={QUADRANT_FILLS.Improving} fillOpacity={1}
+                label={{ value: 'Improving', position: 'insideTopLeft', fill: QUADRANT_COLORS.Improving, fontSize: 12 }} />
+
+              <ReferenceLine x={100} stroke="#9e9e9e" strokeDasharray="4 4" />
+              <ReferenceLine y={100} stroke="#9e9e9e" strokeDasharray="4 4" />
+
+              <XAxis
+                type="number"
+                dataKey="x"
+                name="RS-Ratio"
+                domain={[lo, hi]}
+                tickCount={5}
+                label={{ value: 'RS-Ratio', position: 'insideBottom', offset: -10, fontSize: 12 }}
+              />
+              <YAxis
+                type="number"
+                dataKey="y"
+                name="RS-Momentum"
+                domain={[lo, hi]}
+                tickCount={5}
+                label={{ value: 'RS-Momentum', angle: -90, position: 'insideLeft', fontSize: 12 }}
+              />
+              <ZAxis type="number" dataKey="num_stocks" range={[60, 500]} name="Constituents" />
+              <Tooltip content={<RRGTooltip />} cursor={{ strokeDasharray: '3 3' }} />
+
+              {/* Tails: connecting line + graduated, hoverable per-week dots. */}
+              {tails.map((t) => (
+                <Scatter
+                  key={`tail-${t.name}`}
+                  data={t.points}
+                  line={{ stroke: t.color, strokeWidth: 1.25, strokeOpacity: 0.45 }}
+                  lineType="joint"
+                  shape={<TailDot />}
+                  isAnimationActive={false}
+                  legendType="none"
                 />
               ))}
-            </Scatter>
-          </ScatterChart>
-        </ResponsiveContainer>
+
+              {/* Direction arrows along each trace. */}
+              <Customized
+                component={(props) => (
+                  <TailArrows shown={shown} perSegment={shown.length <= ARROW_DETAIL_LIMIT} {...props} />
+                )}
+              />
+
+              {/* Current head dots — sized by constituents, colored by quadrant, clickable. */}
+              <Scatter
+                data={currentPoints}
+                isAnimationActive={false}
+                onClick={(pt) => onSelectGroup?.(pt?.industry_group)}
+                cursor="pointer"
+              >
+                {currentPoints.map((p) => (
+                  <Cell
+                    key={`dot-${p.industry_group}`}
+                    fill={quadrantColor(p.quadrant)}
+                    fillOpacity={p.is_provisional ? 0.35 : 0.9}
+                    stroke={quadrantColor(p.quadrant)}
+                  />
+                ))}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
+        )}
       </CardContent>
     </Card>
   );
