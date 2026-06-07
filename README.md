@@ -66,6 +66,13 @@ StockBee-style advance/decline analysis with SPY overlay, daily movers (stocks u
 ![Group Rankings](docs/screenshots/group-rankings.png)
 *Industry group rankings with movers panel*
 
+#### Relative Rotation Graph (RRG)
+
+A MarketSmith/Bloomberg-style quadrant view of the same 197-group dataset: every industry group (or GICS-sector roll-up) is plotted by **RS-Ratio** vs **RS-Momentum**, with a weekly tail and direction arrow tracing its path through **Leading → Weakening → Lagging → Improving**. One screen answers *"what's rotating in, what's rolling over."* Filter by name or current rank to focus on the groups you care about, and click any dot to drill into its constituents.
+
+![Relative Rotation Graph](docs/screenshots/rrg-rotation.svg)
+*RRG: industry-group rotation with direction-arrowed weekly tails*
+
 ### Watchlists with Sparklines
 
 Visual performance tracking with RS and price sparklines (30-day trends), price change bars across 7 time periods, drag-and-drop organization with folders, and full-screen chart navigation.
