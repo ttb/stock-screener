@@ -42,6 +42,9 @@ from .transient_database import raise_if_transient_database_error
 
 logger = logging.getLogger(__name__)
 _GITHUB_SYNC_SUCCESS_STATUSES = frozenset({"success", "up_to_date"})
+_LIVE_TOP_UP_MODES = frozenset({"bootstrap", "delta"})
+_STALE_PRICE_TOP_UP_PERIOD = "7d"
+_NO_HISTORY_PRICE_BOOTSTRAP_PERIOD = "2y"
 
 _SMART_REFRESH_TIME_WINDOW_BYPASS: ContextVar[bool] = ContextVar(
     "smart_refresh_time_window_bypass",
@@ -1098,6 +1101,56 @@ def _fetch_with_backoff(
     raise RateLimitExhaustedError(symbols, market)
 
 
+def _classify_symbols_by_price_history(db, *, symbols: list[str], as_of_date) -> dict[str, list[str]]:
+    """Split symbols by whether DB prices already cover ``as_of_date``."""
+    from sqlalchemy import func
+
+    from ..models.stock import StockPrice
+
+    normalized_symbols = [str(symbol).upper() for symbol in symbols]
+    latest_by_symbol = {}
+    for chunk_start in range(0, len(normalized_symbols), 500):
+        chunk_symbols = normalized_symbols[chunk_start:chunk_start + 500]
+        rows = (
+            db.query(StockPrice.symbol, func.max(StockPrice.date))
+            .filter(StockPrice.symbol.in_(chunk_symbols))
+            .group_by(StockPrice.symbol)
+            .all()
+        )
+        latest_by_symbol.update({str(symbol).upper(): latest_date for symbol, latest_date in rows})
+
+    fresh_symbols = []
+    stale_symbols = []
+    no_history_symbols = []
+    for symbol in normalized_symbols:
+        latest_date = latest_by_symbol.get(symbol)
+        if latest_date is None:
+            no_history_symbols.append(symbol)
+        elif latest_date < as_of_date:
+            stale_symbols.append(symbol)
+        else:
+            fresh_symbols.append(symbol)
+
+    return {
+        "fresh": fresh_symbols,
+        "stale": stale_symbols,
+        "no_history": no_history_symbols,
+    }
+
+
+def _build_live_price_refresh_jobs(
+    coverage: dict[str, list[str]],
+) -> list[tuple[str, list[str], str]]:
+    jobs: list[tuple[str, list[str], str]] = []
+    stale_symbols = coverage.get("stale") or []
+    no_history_symbols = coverage.get("no_history") or []
+    if stale_symbols:
+        jobs.append(("stale", stale_symbols, _STALE_PRICE_TOP_UP_PERIOD))
+    if no_history_symbols:
+        jobs.append(("no_history", no_history_symbols, _NO_HISTORY_PRICE_BOOTSTRAP_PERIOD))
+    return jobs
+
+
 def _classify_no_data_failure(error_message: str) -> bool:
     """Heuristic classifier for delisted/no-data provider failures."""
     lower = (error_message or "").lower()
@@ -1641,6 +1694,9 @@ def smart_refresh_cache(
         mode: Refresh mode
             - "auto": Full universe, skip symbols refreshed within 4h (smart refresh)
             - "full": Full universe, force re-fetch everything regardless of freshness
+            - "bootstrap": GitHub-first first-run seed; accepts recent stale bundles
+              and live-fetches only stale/no-history gaps
+            - "delta": GitHub-first scheduled refresh; live-fetches only stale/no-history gaps
 
     Returns:
         Dict with refresh statistics
@@ -1765,29 +1821,84 @@ def smart_refresh_cache(
             for r in universe_rows
         }
 
+        live_top_up_mode = mode in _LIVE_TOP_UP_MODES or activity_lifecycle == "bootstrap"
+        price_bundle_service = get_daily_price_bundle_service()
         github_seed_allowed = (
             all_symbols
             and market is not None
             and activity_lifecycle in {"daily_refresh", "bootstrap"}
         )
-        github_sync = (
-            get_daily_price_bundle_service().sync_from_github(
-                db,
-                market=effective_market,
-            )
-            if github_seed_allowed
-            else {"status": "skipped", "reason": "empty_universe"}
-        )
+        if github_seed_allowed:
+            github_sync_kwargs = {"market": effective_market}
+            if live_top_up_mode:
+                github_sync_kwargs["allow_stale"] = True
+            github_sync = price_bundle_service.sync_from_github(db, **github_sync_kwargs)
+        else:
+            github_sync = {"status": "skipped", "reason": "empty_universe"}
+
+        live_refresh_jobs: list[tuple[str, list[str], str]] = []
         if github_sync.get("status") in _GITHUB_SYNC_SUCCESS_STATUSES:
             used_github_seed = True
-            symbols = get_daily_price_bundle_service().symbols_missing_as_of(
-                db,
-                symbols=all_symbols,
-                as_of_date=str(github_sync.get("as_of_date") or ""),
-            )
+            if github_sync.get("stale_reason"):
+                logger.info(
+                    "GitHub daily price bundle for %s imported with stale manifest: %s",
+                    effective_market,
+                    github_sync.get("stale_reason"),
+                    extra=_log_extra,
+                )
+            if live_top_up_mode:
+                target_as_of = get_market_calendar_service().last_completed_trading_day(effective_market)
+                try:
+                    github_as_of = datetime.fromisoformat(
+                        str(github_sync.get("as_of_date"))
+                    ).date()
+                except (TypeError, ValueError):
+                    github_as_of = None
+                if github_as_of == target_as_of:
+                    symbols = price_bundle_service.symbols_missing_as_of(
+                        db,
+                        symbols=all_symbols,
+                        as_of_date=target_as_of.isoformat(),
+                    )
+                    if symbols:
+                        coverage = _classify_symbols_by_price_history(
+                            db,
+                            symbols=symbols,
+                            as_of_date=target_as_of,
+                        )
+                        live_refresh_jobs = _build_live_price_refresh_jobs(coverage)
+                        symbols = [
+                            symbol
+                            for _kind, job_symbols, _period in live_refresh_jobs
+                            for symbol in job_symbols
+                        ]
+                else:
+                    coverage = _classify_symbols_by_price_history(
+                        db,
+                        symbols=all_symbols,
+                        as_of_date=target_as_of,
+                    )
+                    live_refresh_jobs = _build_live_price_refresh_jobs(coverage)
+                    symbols = [
+                        symbol
+                        for _kind, job_symbols, _period in live_refresh_jobs
+                        for symbol in job_symbols
+                    ]
+            else:
+                symbols = price_bundle_service.symbols_missing_as_of(
+                    db,
+                    symbols=all_symbols,
+                    as_of_date=str(github_sync.get("as_of_date") or ""),
+                )
+                if symbols:
+                    live_refresh_jobs = [(
+                        "missing_or_stale",
+                        symbols,
+                        _NO_HISTORY_PRICE_BOOTSTRAP_PERIOD,
+                    )]
             if symbols:
                 logger.info(
-                    "GitHub daily price bundle synced for %s; falling back to live refresh for %d missing/stale symbols",
+                    "GitHub daily price bundle synced for %s; live refresh will top up %d symbols",
                     effective_market,
                     len(symbols),
                     extra=_log_extra,
@@ -1836,32 +1947,91 @@ def smart_refresh_cache(
                     "mode": mode,
                     "completed_at": datetime.now().isoformat(),
                 }
-        elif mode == "full":
-            # Full refresh: ALL active symbols for the market, ordered by market cap DESC
-            symbols = all_symbols
-            logger.info(
-                "Full refresh: %d symbols (market cap order) %s",
-                len(symbols), market_tag(market), extra=_log_extra,
-            )
         else:
-            # Auto mode: Full universe for market, skip recently-refreshed symbols
-            symbols = all_symbols
-            logger.info(
-                "Auto refresh: %d active symbols (full universe, market cap order) %s",
-                len(symbols), market_tag(market), extra=_log_extra,
-            )
+            status = github_sync.get("status")
+            reason = github_sync.get("reason") or github_sync.get("error")
+            stale_reason = github_sync.get("stale_reason")
+            if github_seed_allowed:
+                logger.warning(
+                    "GitHub daily price bundle not used for %s (status=%s, reason=%s, stale_reason=%s); using live refresh policy",
+                    effective_market,
+                    status,
+                    reason,
+                    stale_reason,
+                    extra=_log_extra,
+                )
+                _mark_market_activity_progress_safely(
+                    db,
+                    market=effective_market,
+                    stage_key="prices",
+                    lifecycle=activity_lifecycle,
+                    task_name=getattr(self, "name", "smart_refresh_cache"),
+                    task_id=getattr(getattr(self, "request", None), "id", None),
+                    current=0,
+                    total=len(all_symbols),
+                    percent=0,
+                    message=f"GitHub price bundle {status}; using live price refresh",
+                )
 
-            # Filter out symbols refreshed within skip window
-            original_count = len(symbols)
-            symbols = price_cache.get_symbols_needing_refresh(symbols, max_age_hours=settings.refresh_skip_hours)
-            skipped = original_count - len(symbols)
-            if skipped > 0:
-                logger.info(f"Skipping {skipped} recently-refreshed symbols (fresh within {settings.refresh_skip_hours}h)")
+            if live_top_up_mode:
+                target_as_of = get_market_calendar_service().last_completed_trading_day(effective_market)
+                coverage = _classify_symbols_by_price_history(
+                    db,
+                    symbols=all_symbols,
+                    as_of_date=target_as_of,
+                )
+                live_refresh_jobs = _build_live_price_refresh_jobs(coverage)
+                symbols = [
+                    symbol
+                    for _kind, job_symbols, _period in live_refresh_jobs
+                    for symbol in job_symbols
+                ]
+                logger.info(
+                    "Delta refresh: %d stale symbols and %d no-history symbols %s",
+                    len(coverage.get("stale") or []),
+                    len(coverage.get("no_history") or []),
+                    market_tag(market),
+                    extra=_log_extra,
+                )
+            elif mode == "full":
+                # Full refresh: ALL active symbols for the market, ordered by market cap DESC
+                symbols = all_symbols
+                live_refresh_jobs = [(
+                    "full",
+                    symbols,
+                    _NO_HISTORY_PRICE_BOOTSTRAP_PERIOD,
+                )]
+                logger.info(
+                    "Full refresh: %d symbols (market cap order) %s",
+                    len(symbols), market_tag(market), extra=_log_extra,
+                )
+            else:
+                # Auto mode: Full universe for market, skip recently-refreshed symbols
+                symbols = all_symbols
+                logger.info(
+                    "Auto refresh: %d active symbols (full universe, market cap order) %s",
+                    len(symbols), market_tag(market), extra=_log_extra,
+                )
+
+                # Filter out symbols refreshed within skip window
+                original_count = len(symbols)
+                symbols = price_cache.get_symbols_needing_refresh(symbols, max_age_hours=settings.refresh_skip_hours)
+                skipped = original_count - len(symbols)
+                if skipped > 0:
+                    logger.info(f"Skipping {skipped} recently-refreshed symbols (fresh within {settings.refresh_skip_hours}h)")
+                if symbols:
+                    live_refresh_jobs = [(
+                        "auto",
+                        symbols,
+                        _NO_HISTORY_PRICE_BOOTSTRAP_PERIOD,
+                    )]
 
         if not symbols:
             message = (
                 "All symbols recently refreshed - nothing to do"
                 if mode == "auto" else
+                "All symbols already fresh - no live fetch needed"
+                if live_top_up_mode else
                 "No active symbols found in universe"
             )
             price_cache.save_warmup_metadata("completed", 0, 0, market=market)
@@ -1893,7 +2063,10 @@ def smart_refresh_cache(
         refreshed_by_market: Counter[str] = Counter()
         failed_by_market: Counter[str] = Counter()
         batch_size = 100
-        total_batches = (total + batch_size - 1) // batch_size if total > 0 else 0
+        total_batches = sum(
+            (len(job_symbols) + batch_size - 1) // batch_size
+            for _kind, job_symbols, _period in live_refresh_jobs
+        )
         bulk_fetcher = BulkDataFetcher()
 
         def _market_for_symbol(symbol: str) -> str:
@@ -1918,114 +2091,130 @@ def smart_refresh_cache(
         # Step 3: Batch fetch with progress tracking
         logger.info(f"[3/3] Fetching {total} symbols...")
 
-        for batch_start in range(0, total, batch_size):
-            batch_symbols = symbols[batch_start:batch_start + batch_size]
-            batch_num = (batch_start // batch_size) + 1
+        processed_count = 0
+        batch_num = 0
+        for job_kind, job_symbols, fetch_period in live_refresh_jobs:
+            for batch_start in range(0, len(job_symbols), batch_size):
+                batch_symbols = job_symbols[batch_start:batch_start + batch_size]
+                batch_num += 1
 
-            logger.info(f"Batch {batch_num}/{total_batches}: Fetching {len(batch_symbols)} symbols")
+                logger.info(
+                    "Batch %d/%d: Fetching %d symbols (%s, period=%s)",
+                    batch_num,
+                    total_batches,
+                    len(batch_symbols),
+                    job_kind,
+                    fetch_period,
+                )
 
-            batch_successes = []
-            batch_failures = []
-            failure_details = {}
+                batch_successes = []
+                batch_failures = []
+                failure_details = {}
 
-            try:
-                # Batch fetch using yf.download() (single HTTP request per batch)
-                batch_results = _fetch_with_backoff(bulk_fetcher, batch_symbols, period="2y", market=market)
+                try:
+                    # Batch fetch using yf.download() (single HTTP request per batch)
+                    batch_results = _fetch_with_backoff(
+                        bulk_fetcher,
+                        batch_symbols,
+                        period=fetch_period,
+                        market=market,
+                    )
 
-                # Separate successes from failures, then batch-store all successes
-                batch_to_store = {}
-                for symbol, data in batch_results.items():
-                    if not data.get('has_error') and data.get('price_data') is not None:
-                        price_df = data['price_data']
-                        if not price_df.empty:
-                            batch_to_store[symbol] = price_df
-                            refreshed += 1
-                            refreshed_by_market[_market_for_symbol(symbol)] += 1
-                            batch_successes.append(symbol)
+                    # Separate successes from failures, then batch-store all successes
+                    batch_to_store = {}
+                    for symbol, data in batch_results.items():
+                        if not data.get('has_error') and data.get('price_data') is not None:
+                            price_df = data['price_data']
+                            if not price_df.empty:
+                                batch_to_store[symbol] = price_df
+                                refreshed += 1
+                                refreshed_by_market[_market_for_symbol(symbol)] += 1
+                                batch_successes.append(symbol)
+                            else:
+                                failed += 1
+                                failed_symbols.append(symbol)
+                                failed_by_market[_market_for_symbol(symbol)] += 1
+                                batch_failures.append(symbol)
+                                failure_details[symbol] = "Empty data returned"
                         else:
                             failed += 1
                             failed_symbols.append(symbol)
                             failed_by_market[_market_for_symbol(symbol)] += 1
                             batch_failures.append(symbol)
-                            failure_details[symbol] = "Empty data returned"
+                            failure_details[symbol] = data.get('error', 'Unknown error')
+
+                    # Batch store in Redis (pipeline) + DB (single transaction)
+                    if batch_to_store:
+                        price_cache.store_batch_in_cache(batch_to_store, also_store_db=True)
+
+                except SoftTimeLimitExceeded:
+                    raise
+                except Exception as e:
+                    raise_if_transient_database_error(e)
+                    logger.error(f"Batch {batch_num} error: {e}")
+                    failed += len(batch_symbols)
+                    failed_symbols.extend(batch_symbols)
+                    failed_by_market.update(_market_for_symbol(symbol) for symbol in batch_symbols)
+                    batch_failures.extend(batch_symbols)
+                    failure_details.update({symbol: str(e) for symbol in batch_symbols})
+
+                # Track symbol failures for auto-deactivation of delisted symbols
+                _track_symbol_failures(
+                    price_cache,
+                    batch_successes,
+                    batch_failures,
+                    db,
+                    failure_details=failure_details,
+                )
+
+                # Update progress for UI and stuck detection
+                processed_count += len(batch_symbols)
+                progress = min(processed_count, total)
+                percent = (progress / total) * 100
+                processed = progress
+
+                # Update Celery task state
+                self.update_state(
+                    state='PROGRESS',
+                    meta={
+                        'current': progress,
+                        'total': total,
+                        'percent': percent,
+                        'refreshed': refreshed,
+                        'failed': failed
+                    }
+                )
+
+                # Update heartbeat for stuck detection
+                price_cache.update_warmup_heartbeat(progress, total, percent, market=market)
+                _mark_market_activity_progress_safely(
+                    db,
+                    market=effective_market,
+                    stage_key="prices",
+                    lifecycle=activity_lifecycle,
+                    task_name=getattr(self, "name", "smart_refresh_cache"),
+                    task_id=getattr(getattr(self, "request", None), "id", None),
+                    current=progress,
+                    total=total,
+                    percent=round(percent, 1),
+                    message=f"Batch {batch_num}/{total_batches} · refreshing prices",
+                )
+
+                # Extend lock TTL to prevent expiry during long-running tasks
+                task_id = self.request.id or 'unknown'
+                from ..wiring.bootstrap import get_data_fetch_lock
+                lock = get_data_fetch_lock()
+                lock.extend_lock(task_id, 300, market=market)
+
+                # Rate limit between batches (per-market key when scoped)
+                if processed_count < total:
+                    if market is not None:
+                        get_rate_limiter().wait_for_market("yfinance:batch", market)
                     else:
-                        failed += 1
-                        failed_symbols.append(symbol)
-                        failed_by_market[_market_for_symbol(symbol)] += 1
-                        batch_failures.append(symbol)
-                        failure_details[symbol] = data.get('error', 'Unknown error')
-
-                # Batch store in Redis (pipeline) + DB (single transaction)
-                if batch_to_store:
-                    price_cache.store_batch_in_cache(batch_to_store, also_store_db=True)
-
-            except SoftTimeLimitExceeded:
-                raise
-            except Exception as e:
-                raise_if_transient_database_error(e)
-                logger.error(f"Batch {batch_num} error: {e}")
-                failed += len(batch_symbols)
-                failed_symbols.extend(batch_symbols)
-                failed_by_market.update(_market_for_symbol(symbol) for symbol in batch_symbols)
-                batch_failures.extend(batch_symbols)
-                failure_details.update({symbol: str(e) for symbol in batch_symbols})
-
-            # Track symbol failures for auto-deactivation of delisted symbols
-            _track_symbol_failures(
-                price_cache,
-                batch_successes,
-                batch_failures,
-                db,
-                failure_details=failure_details,
-            )
-
-            # Update progress for UI and stuck detection
-            progress = min((batch_start + batch_size), total)
-            percent = (progress / total) * 100
-            processed = progress
-
-            # Update Celery task state
-            self.update_state(
-                state='PROGRESS',
-                meta={
-                    'current': progress,
-                    'total': total,
-                    'percent': percent,
-                    'refreshed': refreshed,
-                    'failed': failed
-                }
-            )
-
-            # Update heartbeat for stuck detection
-            price_cache.update_warmup_heartbeat(progress, total, percent, market=market)
-            _mark_market_activity_progress_safely(
-                db,
-                market=effective_market,
-                stage_key="prices",
-                lifecycle=activity_lifecycle,
-                task_name=getattr(self, "name", "smart_refresh_cache"),
-                task_id=getattr(getattr(self, "request", None), "id", None),
-                current=progress,
-                total=total,
-                percent=round(percent, 1),
-                message=f"Batch {batch_num}/{total_batches} · refreshing prices",
-            )
-
-            # Extend lock TTL to prevent expiry during long-running tasks
-            task_id = self.request.id or 'unknown'
-            from ..wiring.bootstrap import get_data_fetch_lock
-            lock = get_data_fetch_lock()
-            lock.extend_lock(task_id, 300, market=market)
-
-            # Rate limit between batches (per-market key when scoped)
-            if batch_start + batch_size < total:
-                if market is not None:
-                    get_rate_limiter().wait_for_market("yfinance:batch", market)
-                else:
-                    get_rate_limiter().wait(
-                        "yfinance:batch",
-                        min_interval_s=settings.yfinance_batch_rate_limit_interval,
-                    )
+                        get_rate_limiter().wait(
+                            "yfinance:batch",
+                            min_interval_s=settings.yfinance_batch_rate_limit_interval,
+                        )
 
         # Save final warmup metadata (treat >95% success as "completed")
         success_rate = refreshed / total if total > 0 else 0

@@ -659,7 +659,7 @@ def get_runtime_activity_status(db: Session) -> dict[str, Any]:
         bootstrap_status.bootstrap_state == "running" or bool(secondary_active)
     ):
         background_warning = (
-            "Bootstrap remains active until every enabled market has a published scan."
+            "Additional enabled markets are still loading in the background."
         )
 
     return {

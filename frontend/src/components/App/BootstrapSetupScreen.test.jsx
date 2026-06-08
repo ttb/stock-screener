@@ -388,7 +388,7 @@ describe('BootstrapSetupScreen', () => {
           progress_mode: 'determinate',
           percent: 100,
           message: 'Primary market is ready while additional market loading continues.',
-          background_warning: 'Bootstrap remains active until every enabled market has a published scan.',
+          background_warning: 'Additional enabled markets are still loading in the background.',
         },
         markets: [
           {

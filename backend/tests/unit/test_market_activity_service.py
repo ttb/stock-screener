@@ -731,7 +731,7 @@ def test_runtime_activity_status_marks_primary_ready_with_secondary_bootstrap_ru
     assert payload["bootstrap"]["app_ready"] is True
     assert payload["bootstrap"]["progress_mode"] == "determinate"
     assert payload["bootstrap"]["percent"] == 100.0
-    assert "published scan" in payload["bootstrap"]["background_warning"].lower()
+    assert "background" in payload["bootstrap"]["background_warning"].lower()
     assert payload["summary"]["active_market_count"] == 1
     assert payload["summary"]["active_markets"] == ["HK"]
     hk_market = next(item for item in payload["markets"] if item["market"] == "HK")

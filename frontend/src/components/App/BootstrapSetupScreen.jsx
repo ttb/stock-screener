@@ -222,8 +222,8 @@ export default function BootstrapSetupScreen({
                 First-run market bootstrap
               </Typography>
               <Typography color="text.secondary">
-                Pick the primary market for startup defaults. The workspace opens after every
-                enabled market finishes its first scan-backed snapshot.
+                Pick the primary market for startup defaults. The workspace opens after the
+                primary market finishes its first scan-backed snapshot.
               </Typography>
             </Box>
 
@@ -236,8 +236,8 @@ export default function BootstrapSetupScreen({
             {running && (
               <Stack spacing={2}>
                 <Alert severity="info">
-                  Initial sync is running. The workspace will open after all enabled markets have
-                  current data and a published scan.
+                  Initial sync is running. The workspace will open after the primary market has
+                  current data and a published scan. Additional markets continue loading in the background.
                 </Alert>
                 <Box
                   sx={{
@@ -276,7 +276,7 @@ export default function BootstrapSetupScreen({
                 </Box>
                 <Alert severity="warning">
                   {bootstrap?.background_warning
-                    || 'Keep this setup screen open until every enabled market finishes its bootstrap pipeline.'}
+                    || 'Additional enabled markets may continue loading after the workspace opens.'}
                 </Alert>
                 <Box>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>

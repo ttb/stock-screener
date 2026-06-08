@@ -96,7 +96,7 @@ def _build_market_plan(market: str) -> MarketBootstrapPlan:
                 task_name="smart_refresh_cache",
                 queue_kind=BootstrapQueueKind.DATA_FETCH,
                 market=market,
-                mode="full",
+                mode="bootstrap",
             ),
             _stage(
                 key="fundamentals",
