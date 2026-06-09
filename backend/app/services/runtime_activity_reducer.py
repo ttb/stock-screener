@@ -6,7 +6,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .runtime_activity_contract import RuntimeActivityRecord, stage_index
+from .runtime_activity_contract import (
+    RuntimeActivityRecord,
+    RuntimeActivityUpdate,
+    stage_index,
+)
 
 _OPTIONAL_FAILURE_SCAN_SUPERSEDE_STAGES = frozenset({"groups"})
 _PRESERVED_EXISTING_STATUSES = frozenset({"running", "completed", "failed"})
@@ -23,12 +27,16 @@ class RuntimeActivityTransition:
 
 
 def _coerce_activity_record(
-    payload: RuntimeActivityRecord | Mapping[str, Any] | None,
+    payload: RuntimeActivityRecord | RuntimeActivityUpdate | Mapping[str, Any] | None,
+    *,
+    existing: RuntimeActivityRecord | None = None,
 ) -> RuntimeActivityRecord | None:
     if payload is None:
         return None
     if isinstance(payload, RuntimeActivityRecord):
         return payload
+    if isinstance(payload, RuntimeActivityUpdate):
+        return payload.inherit_context(existing).to_record()
     try:
         return RuntimeActivityRecord.from_payload(payload)
     except ValueError:
@@ -37,14 +45,14 @@ def _coerce_activity_record(
 
 def reduce_market_activity(
     existing_payload: RuntimeActivityRecord | Mapping[str, Any] | None,
-    incoming_payload: RuntimeActivityRecord | Mapping[str, Any],
+    incoming_payload: RuntimeActivityRecord | RuntimeActivityUpdate | Mapping[str, Any],
 ) -> RuntimeActivityTransition:
     """Return the activity payload that should win this state transition."""
-    incoming = _coerce_activity_record(incoming_payload)
+    existing = _coerce_activity_record(existing_payload)
+    incoming = _coerce_activity_record(incoming_payload, existing=existing)
     if incoming is None:
         raise ValueError("incoming runtime activity payload is invalid")
 
-    existing = _coerce_activity_record(existing_payload)
     if existing is None:
         return RuntimeActivityTransition(should_persist=True, record=incoming)
 

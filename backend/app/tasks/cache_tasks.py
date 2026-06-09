@@ -27,7 +27,7 @@ from ..services.market_activity_service import (
     mark_market_activity_progress,
     mark_market_activity_started,
 )
-from ..services.price_refresh_planning import plan_price_refresh
+from ..services.price_refresh_planning import build_market_price_refresh_plan
 from ..services.price_refresh_activity import (
     PriceRefreshActivityDependencies,
     PriceRefreshActivityReporter,
@@ -1638,6 +1638,24 @@ def run_smart_price_refresh(
     from ..wiring.bootstrap import get_data_fetch_lock, get_price_cache
     from .market_queues import market_tag, log_extra, normalize_market
 
+    def build_refresh_plan(db, *, mode, market, effective_market, recently_refreshed_filter):
+        return build_market_price_refresh_plan(
+            db,
+            mode=mode,
+            market=market,
+            effective_market=effective_market,
+            normalize_market=normalize_market,
+            market_calendar_service=get_market_calendar_service(),
+            sync_github_seed=lambda sync_db, *, market, allow_stale: (
+                get_daily_price_bundle_service().sync_from_github(
+                    sync_db,
+                    market=market,
+                    allow_stale=allow_stale,
+                )
+            ),
+            recently_refreshed_filter=recently_refreshed_filter,
+        )
+
     activity_reporter = PriceRefreshActivityReporter(
         PriceRefreshActivityDependencies(
             record_market_refresh_success=_record_market_refresh_success_safely,
@@ -1661,9 +1679,10 @@ def run_smart_price_refresh(
         price_cache_factory=get_price_cache,
         bulk_fetcher_factory=BulkDataFetcher,
         warm_benchmarks=warm_spy_cache,
-        plan_price_refresh=plan_price_refresh,
-        daily_price_bundle_service_factory=get_daily_price_bundle_service,
-        market_calendar_service_factory=get_market_calendar_service,
+        build_refresh_plan=build_refresh_plan,
+        last_completed_trading_day=lambda market_code: (
+            get_market_calendar_service().last_completed_trading_day(market_code)
+        ),
         activity_reporter=activity_reporter,
         live_runner=live_runner,
         retry_scheduler=PriceRefreshRetryScheduler(_schedule_failed_symbol_retry),

@@ -57,3 +57,35 @@ def test_reduce_market_activity_rejects_ownerless_progress_over_completed_record
 
     assert transition.should_persist is False
     assert transition.record == existing
+
+
+def test_reduce_market_activity_inherits_running_context_from_existing_record():
+    from app.services.runtime_activity_contract import RuntimeActivityUpdate
+    from app.services.runtime_activity_reducer import reduce_market_activity
+
+    existing = _record(
+        status="running",
+        stage_key="fundamentals",
+        lifecycle="bootstrap",
+        task_name="refresh_all_fundamentals",
+        task_id="task-us",
+        message="Refreshing fundamentals",
+    )
+    incoming = RuntimeActivityUpdate(
+        market="US",
+        stage_key="fundamentals",
+        lifecycle=None,
+        status="running",
+        current=25,
+        total=100,
+        message=None,
+    )
+
+    transition = reduce_market_activity(existing, incoming)
+
+    assert transition.should_persist is True
+    assert transition.record.lifecycle == "bootstrap"
+    assert transition.record.task_name == "refresh_all_fundamentals"
+    assert transition.record.task_id == "task-us"
+    assert transition.record.message == "Refreshing fundamentals"
+    assert transition.record.percent == 25.0

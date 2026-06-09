@@ -13,9 +13,8 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from ..config import settings
 from ..services.price_refresh_actions import (
-    PriceRefreshActionFactory,
-    PriceRefreshPreparation,
     PriceRefreshTerminalCompletion,
+    build_terminal_completion,
 )
 from ..services.price_refresh_activity import (
     CeleryTaskLike,
@@ -31,7 +30,6 @@ from ..services.price_refresh_live_runner import (
 from ..services.price_refresh_execution import PriceRefreshExecutionSummary
 from ..services.price_refresh_planning import (
     GitHubSeedOutcome,
-    LIVE_TOP_UP_MODES,
     PriceRefreshMode,
     PriceRefreshPlan,
     PriceRefreshSource,
@@ -57,9 +55,8 @@ class PriceRefreshWorkflowDependencies:
     price_cache_factory: Callable[[], Any]
     bulk_fetcher_factory: Callable[[], Any]
     warm_benchmarks: Callable[..., Mapping[str, Any]]
-    plan_price_refresh: Callable[..., PriceRefreshPlan]
-    daily_price_bundle_service_factory: Callable[[], Any]
-    market_calendar_service_factory: Callable[[], Any]
+    build_refresh_plan: Callable[..., PriceRefreshPlan]
+    last_completed_trading_day: Callable[[str], Any]
     activity_reporter: PriceRefreshActivityReporter
     live_runner: LivePriceRefreshRunner
     retry_scheduler: PriceRefreshRetryScheduler
@@ -143,7 +140,7 @@ class PriceRefreshWorkflow:
                 lifecycle=activity_lifecycle,
                 message="Refreshing market prices",
             )
-            preparation = self._prepare_refresh(
+            refresh_plan = self._prepare_refresh(
                 db,
                 price_cache,
                 task=task,
@@ -156,7 +153,7 @@ class PriceRefreshWorkflow:
             terminal_completion = self._build_terminal_completion(
                 mode=parsed_mode,
                 effective_market=effective_market,
-                preparation=preparation,
+                refresh_plan=refresh_plan,
             )
             if terminal_completion is not None:
                 return self._complete_terminal_refresh(
@@ -177,7 +174,7 @@ class PriceRefreshWorkflow:
                 market=market,
                 effective_market=effective_market,
                 activity_lifecycle=activity_lifecycle,
-                preparation=preparation,
+                refresh_plan=refresh_plan,
             )
             return outcome.to_task_result()
 
@@ -296,19 +293,12 @@ class PriceRefreshWorkflow:
         effective_market: str,
         activity_lifecycle: str,
         log_extra: Mapping[str, Any],
-    ) -> PriceRefreshPreparation:
+    ) -> PriceRefreshPlan:
         gateway = self._deps.market_gateway
         logger.info("[1/3] Warming market benchmarks...")
         benchmark_result = self._deps.warm_benchmarks(market=market)
         if benchmark_result.get("error"):
             logger.error("Benchmark warmup failed: %s", benchmark_result.get("error"))
-
-        logger.info("[2/3] Determining symbols to refresh (mode=%s)...", mode.value)
-        all_symbols, symbol_markets = self._load_active_symbol_universe(
-            db,
-            market=market,
-            effective_market=effective_market,
-        )
 
         def symbols_needing_auto_refresh(candidate_symbols: Sequence[str]) -> Sequence[str]:
             logger.info(
@@ -327,42 +317,26 @@ class PriceRefreshWorkflow:
                     "Skipping %d recently-refreshed symbols (fresh within %sh)",
                     skipped,
                     settings.refresh_skip_hours,
-                )
+            )
             return refresh_symbols
 
-        github_seed = None
-        if mode in LIVE_TOP_UP_MODES and all_symbols and market is not None:
-            github_seed = GitHubSeedOutcome.from_mapping(
-                self._deps.daily_price_bundle_service_factory().sync_from_github(
-                    db,
-                    market=effective_market,
-                    allow_stale=True,
-                )
-            )
-
-        refresh_plan = self._deps.plan_price_refresh(
+        logger.info("[2/3] Determining symbols to refresh (mode=%s)...", mode.value)
+        refresh_plan = self._deps.build_refresh_plan(
             db,
-            all_symbols=all_symbols,
             mode=mode,
+            market=market,
             effective_market=effective_market,
-            market_calendar_service=self._deps.market_calendar_service_factory(),
-            github_seed=github_seed,
             recently_refreshed_filter=(
                 symbols_needing_auto_refresh
                 if mode is PriceRefreshMode.AUTO
                 else None
             ),
         )
-        preparation = PriceRefreshPreparation(
-            all_symbols=all_symbols,
-            symbol_markets=symbol_markets,
-            refresh_plan=refresh_plan,
-        )
         self._publish_github_seed_log(
-            github_seed=preparation.github_seed,
+            github_seed=refresh_plan.github_seed,
             refresh_plan=refresh_plan,
             effective_market=effective_market,
-            all_symbols=all_symbols,
+            all_symbols=refresh_plan.all_symbols,
             activity_lifecycle=activity_lifecycle,
             db=db,
             task=task,
@@ -370,34 +344,27 @@ class PriceRefreshWorkflow:
         )
         self._log_live_symbol_plan(
             refresh_plan=refresh_plan,
-            refresh_source=preparation.refresh_source,
-            symbols=preparation.symbols,
+            refresh_source=refresh_plan.source,
+            symbols=refresh_plan.symbols,
             mode=mode,
             market=market,
             effective_market=effective_market,
             log_extra=log_extra,
         )
-        return preparation
+        return refresh_plan
 
     def _build_terminal_completion(
         self,
         *,
         mode: PriceRefreshMode,
         effective_market: str,
-        preparation: PriceRefreshPreparation,
+        refresh_plan: PriceRefreshPlan,
     ) -> PriceRefreshTerminalCompletion | None:
-        def last_completed_trading_day(action_market: str) -> Any:
-            return (
-                self._deps.market_calendar_service_factory()
-                .last_completed_trading_day(action_market)
-            )
-
-        return PriceRefreshActionFactory(
-            last_completed_trading_day=last_completed_trading_day,
-        ).build_terminal_completion(
+        return build_terminal_completion(
             mode=mode,
             effective_market=effective_market,
-            preparation=preparation,
+            plan=refresh_plan,
+            last_completed_trading_day=self._deps.last_completed_trading_day,
         )
 
     def _complete_terminal_refresh(
@@ -432,12 +399,12 @@ class PriceRefreshWorkflow:
         market: str | None,
         effective_market: str,
         activity_lifecycle: str,
-        preparation: PriceRefreshPreparation,
+        refresh_plan: PriceRefreshPlan,
     ) -> PriceRefreshOutcome:
-        total = len(preparation.symbols)
+        total = len(refresh_plan.symbols)
         symbol_market_totals = Counter(
-            preparation.symbol_markets.get(str(symbol).upper(), effective_market)
-            for symbol in preparation.symbols
+            refresh_plan.symbol_markets.get(str(symbol).upper(), effective_market)
+            for symbol in refresh_plan.symbols
         )
         bulk_fetcher = self._deps.bulk_fetcher_factory()
 
@@ -462,13 +429,13 @@ class PriceRefreshWorkflow:
             bulk_fetcher=bulk_fetcher,
             price_cache=price_cache,
             db=db,
-            jobs=preparation.live_refresh_jobs,
+            jobs=refresh_plan.live_refresh_jobs,
             total=total,
             batch_size=100,
             market=market,
             effective_market=effective_market,
             activity_lifecycle=activity_lifecycle,
-            symbol_markets=preparation.symbol_markets,
+            symbol_markets=refresh_plan.symbol_markets,
             activity_reporter=self._deps.activity_reporter,
         )
 
@@ -482,7 +449,7 @@ class PriceRefreshWorkflow:
         self._deps.retry_scheduler.schedule(
             execution_result.failed_symbols,
             effective_market=effective_market,
-            symbol_markets=preparation.symbol_markets,
+            symbol_markets=refresh_plan.symbol_markets,
             activity_lifecycle=activity_lifecycle,
         )
 
@@ -518,7 +485,7 @@ class PriceRefreshWorkflow:
             status=status,
             source=(
                 PriceRefreshSource.GITHUB_AND_LIVE
-                if preparation.refresh_plan.used_github_seed
+                if refresh_plan.used_github_seed
                 else PriceRefreshSource.LIVE
             ),
             mode=mode,
@@ -526,7 +493,7 @@ class PriceRefreshWorkflow:
             failed=execution_result.failed,
             total=total,
             failed_symbols=execution_result.failed_symbols,
-            github_seed=preparation.github_seed,
+            github_seed=refresh_plan.github_seed,
         )
 
     def _market_success_rates(
@@ -544,9 +511,7 @@ class PriceRefreshWorkflow:
             )
             if market_success_rate >= 0.95:
                 market_success_rates[refresh_market] = (
-                    self._deps.market_calendar_service_factory().last_completed_trading_day(
-                        refresh_market
-                    ),
+                    self._deps.last_completed_trading_day(refresh_market),
                     market_success_rate,
                 )
         return market_success_rates
@@ -582,33 +547,6 @@ class PriceRefreshWorkflow:
             hour,
         )
         return True
-
-    def _load_active_symbol_universe(
-        self,
-        db,
-        *,
-        market: str | None,
-        effective_market: str,
-    ) -> tuple[list[str], dict[str, str]]:
-        from ..models.stock_universe import StockUniverse
-
-        query = db.query(StockUniverse.symbol, StockUniverse.market).filter(
-            StockUniverse.is_active == True
-        )
-        if market is not None:
-            query = query.filter(
-                StockUniverse.market == self._deps.market_gateway.normalize_market(market)
-            )
-        query = query.order_by(StockUniverse.market_cap.desc().nullslast())
-        universe_rows = query.all()
-        all_symbols = [row.symbol for row in universe_rows]
-        symbol_markets = {
-            str(row.symbol).upper(): self._deps.market_gateway.normalize_market(
-                getattr(row, "market", None) or effective_market
-            )
-            for row in universe_rows
-        }
-        return all_symbols, symbol_markets
 
     def _publish_github_seed_log(
         self,

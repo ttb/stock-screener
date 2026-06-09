@@ -91,6 +91,16 @@ class BootstrapQueueManifestRecorder:
     def record_queued(self) -> None:
         self._record(BootstrapQueueState.QUEUED)
 
+    def record_dispatch_failed_safely(self) -> None:
+        try:
+            self._record(BootstrapQueueState.DISPATCH_FAILED)
+        except Exception:
+            logger.warning(
+                "Failed to record bootstrap dispatch failure",
+                extra=self.log_extra(),
+                exc_info=True,
+            )
+
     def _record(self, queue_state: BootstrapQueueState) -> None:
         record_runtime_bootstrap_run(
             primary_market=self.primary_market,
@@ -288,6 +298,7 @@ def queue_local_runtime_bootstrap(*, primary_market: str, enabled_markets: Itera
             )
 
     except Exception:
+        manifest_recorder.record_dispatch_failed_safely()
         raise
 
     try:

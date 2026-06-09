@@ -494,6 +494,13 @@ def test_queue_local_runtime_bootstrap_records_partial_manifest_when_background_
             "market_task_ids": {"US": "primary-task-123"},
             "queue_state": "partial",
         },
+        {
+            "primary_market": "US",
+            "enabled_markets": ("US", "HK"),
+            "primary_task_id": "primary-task-123",
+            "market_task_ids": {"US": "primary-task-123"},
+            "queue_state": "dispatch_failed",
+        },
     ]
 
 

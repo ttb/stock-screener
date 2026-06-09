@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 ACTIVE_ACTIVITY_STATUSES = frozenset({"queued", "running"})
@@ -146,45 +146,7 @@ class RuntimeActivityRecord:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "RuntimeActivityRecord":
-        missing_fields = PERSISTED_RUNTIME_ACTIVITY_FIELDS.difference(payload)
-        if missing_fields:
-            missing = ", ".join(sorted(missing_fields))
-            raise ValueError(f"missing required runtime activity fields: {missing}")
-
-        stage_key = payload.get("stage_key")
-        status = str(payload.get("status") or "idle")
-        lifecycle = str(payload.get("lifecycle") or "")
-        if not lifecycle:
-            raise ValueError("missing lifecycle")
-        current = payload.get("current")
-        total = payload.get("total")
-
-        raw_percent = payload.get("percent")
-        percent = (
-            float(raw_percent)
-            if raw_percent is not None
-            else None
-        )
-
-        return cls(
-            market=str(payload.get("market") or "").upper(),
-            lifecycle=lifecycle,
-            stage_key=stage_key,
-            stage_label=stage_label(stage_key),
-            status=status,
-            progress_mode=progress_mode(status, percent, current, total),
-            percent=resolve_progress_percent(percent, current, total),
-            current=current,
-            total=total,
-            message=(
-                str(payload["message"])
-                if payload.get("message") is not None
-                else None
-            ),
-            task_name=payload.get("task_name"),
-            task_id=payload.get("task_id"),
-            updated_at=payload.get("updated_at"),
-        )
+        return PersistedRuntimeActivity.from_payload(payload).to_record()
 
     @property
     def active(self) -> bool:
@@ -211,7 +173,82 @@ class RuntimeActivityRecord:
             "updated_at": self.updated_at,
         }
 
-    def to_persisted_payload(self) -> dict[str, Any]:
+
+@dataclass(frozen=True)
+class PersistedRuntimeActivity:
+    market: str
+    lifecycle: str
+    stage_key: str | None
+    status: str
+    percent: float | None
+    current: int | None
+    total: int | None
+    message: str | None
+    task_name: str | None
+    task_id: str | None
+    updated_at: str | None
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "PersistedRuntimeActivity":
+        missing_fields = PERSISTED_RUNTIME_ACTIVITY_FIELDS.difference(payload)
+        if missing_fields:
+            missing = ", ".join(sorted(missing_fields))
+            raise ValueError(f"missing required runtime activity fields: {missing}")
+
+        lifecycle = str(payload.get("lifecycle") or "")
+        if not lifecycle:
+            raise ValueError("missing lifecycle")
+        raw_percent = payload.get("percent")
+        return cls(
+            market=str(payload.get("market") or "").upper(),
+            lifecycle=lifecycle,
+            stage_key=payload.get("stage_key"),
+            status=str(payload.get("status") or "idle"),
+            percent=float(raw_percent) if raw_percent is not None else None,
+            current=payload.get("current"),
+            total=payload.get("total"),
+            message=(
+                str(payload["message"])
+                if payload.get("message") is not None
+                else None
+            ),
+            task_name=payload.get("task_name"),
+            task_id=payload.get("task_id"),
+            updated_at=payload.get("updated_at"),
+        )
+
+    @classmethod
+    def from_record(cls, record: RuntimeActivityRecord) -> "PersistedRuntimeActivity":
+        return cls(
+            market=record.market,
+            lifecycle=record.lifecycle,
+            stage_key=record.stage_key,
+            status=record.status,
+            percent=record.percent,
+            current=record.current,
+            total=record.total,
+            message=record.message,
+            task_name=record.task_name,
+            task_id=record.task_id,
+            updated_at=record.updated_at,
+        )
+
+    def to_record(self) -> RuntimeActivityRecord:
+        return RuntimeActivityRecord.create(
+            market=self.market,
+            stage_key=self.stage_key,
+            lifecycle=self.lifecycle,
+            status=self.status,
+            task_name=self.task_name,
+            task_id=self.task_id,
+            percent=self.percent,
+            current=self.current,
+            total=self.total,
+            message=self.message,
+            updated_at=self.updated_at,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
         return {
             "market": self.market,
             "lifecycle": self.lifecycle,
@@ -225,6 +262,54 @@ class RuntimeActivityRecord:
             "task_id": self.task_id,
             "updated_at": self.updated_at,
         }
+
+
+@dataclass(frozen=True)
+class RuntimeActivityUpdate:
+    market: str
+    stage_key: str | None
+    lifecycle: str | None
+    status: str
+    task_name: str | None = None
+    task_id: str | None = None
+    percent: float | None = None
+    current: int | None = None
+    total: int | None = None
+    message: str | None = None
+    updated_at: str | None = None
+
+    def inherit_context(self, existing: RuntimeActivityRecord | None) -> "RuntimeActivityUpdate":
+        if existing is None:
+            return self
+        if self.status != "running" or existing.status not in ACTIVE_ACTIVITY_STATUSES:
+            return self
+        if existing.task_id and self.task_id and existing.task_id != self.task_id:
+            return self
+        if existing.stage_key and existing.stage_key != self.stage_key:
+            return self
+        return replace(
+            self,
+            stage_key=existing.stage_key or self.stage_key,
+            lifecycle=self.lifecycle or existing.lifecycle,
+            task_name=self.task_name or existing.task_name,
+            task_id=self.task_id or existing.task_id,
+            message=self.message or existing.message,
+        )
+
+    def to_record(self) -> RuntimeActivityRecord:
+        return RuntimeActivityRecord.create(
+            market=self.market,
+            stage_key=self.stage_key,
+            lifecycle=self.lifecycle,
+            status=self.status,
+            task_name=self.task_name,
+            task_id=self.task_id,
+            percent=self.percent,
+            current=self.current,
+            total=self.total,
+            message=self.message,
+            updated_at=self.updated_at,
+        )
 
 
 def _default_message(status: str, resolved_stage_label: str | None) -> str | None:

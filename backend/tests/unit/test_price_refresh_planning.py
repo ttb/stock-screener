@@ -207,3 +207,42 @@ def test_github_seed_and_plan_do_not_expose_mapping_compatibility_surface():
     assert not hasattr(seed, "get")
     assert "__getitem__" not in GitHubSeedOutcome.__dict__
     assert "github_sync" not in PriceRefreshPlan.__dict__
+
+
+def test_build_market_price_refresh_plan_owns_universe_and_github_seed(universe_session):
+    from app.models.stock_universe import StockUniverse
+    from app.services.price_refresh_planning import (
+        PriceRefreshSource,
+        build_market_price_refresh_plan,
+    )
+
+    universe_session.add_all(
+        [
+            StockUniverse(symbol="0700.HK", market="HK", market_cap=500),
+            StockUniverse(symbol="0005.HK", market="HK", market_cap=100),
+            StockUniverse(symbol="7203.T", market="JP", market_cap=300),
+        ]
+    )
+    universe_session.add(StockPrice(symbol="0700.HK", date=date(2026, 6, 8), close=100))
+    universe_session.commit()
+
+    sync_calls = []
+
+    plan = build_market_price_refresh_plan(
+        universe_session,
+        mode="bootstrap",
+        market="hk",
+        effective_market="HK",
+        normalize_market=lambda market: str(market).upper(),
+        market_calendar_service=_calendar(date(2026, 6, 8)),
+        sync_github_seed=lambda db, *, market, allow_stale: (
+            sync_calls.append((db, market, allow_stale))
+            or {"status": "success", "as_of_date": "2026-06-08"}
+        ),
+    )
+
+    assert sync_calls == [(universe_session, "HK", True)]
+    assert plan.all_symbols == ("0700.HK", "0005.HK")
+    assert plan.symbol_markets == {"0700.HK": "HK", "0005.HK": "HK"}
+    assert plan.source is PriceRefreshSource.GITHUB_AND_LIVE
+    assert plan.symbols == ("0005.HK",)

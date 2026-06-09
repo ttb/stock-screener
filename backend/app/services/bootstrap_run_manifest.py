@@ -21,6 +21,7 @@ class BootstrapQueueState(str, Enum):
     QUEUEING = "queueing"
     PARTIAL = "partial"
     QUEUED = "queued"
+    DISPATCH_FAILED = "dispatch_failed"
 
     @classmethod
     def parse(cls, value: "BootstrapQueueState | str") -> "BootstrapQueueState":

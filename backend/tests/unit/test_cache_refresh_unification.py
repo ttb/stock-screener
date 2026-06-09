@@ -534,15 +534,26 @@ def test_smart_refresh_cache_delta_prefers_github_daily_bundle_and_skips_live_fe
         ),
     )
 
-    def _plan_price_refresh(db, **kwargs):
-        from app.services.price_refresh_planning import PriceRefreshPlan, PriceRefreshSource
+    def _build_market_price_refresh_plan(db, **kwargs):
+        from app.services.price_refresh_planning import (
+            GitHubSeedOutcome,
+            PriceRefreshPlan,
+            PriceRefreshSource,
+        )
 
-        github_seed = kwargs["github_seed"]
+        github_seed = GitHubSeedOutcome.from_mapping(
+            kwargs["sync_github_seed"](
+                db,
+                market=kwargs["effective_market"],
+                allow_stale=True,
+            )
+        )
         assert github_seed.status.value == "success"
         assert kwargs["mode"] == "delta"
         plan = PriceRefreshPlan(
             symbols=(),
             jobs=(),
+            all_symbols=("AAPL", "MSFT"),
             github_seed=github_seed,
             github_seed_used=True,
             completion_message="GitHub daily price bundle is current - no live fetch needed",
@@ -550,7 +561,7 @@ def test_smart_refresh_cache_delta_prefers_github_daily_bundle_and_skips_live_fe
         assert plan.source is PriceRefreshSource.GITHUB
         return plan
 
-    monkeypatch.setattr(module, "plan_price_refresh", _plan_price_refresh)
+    monkeypatch.setattr(module, "build_market_price_refresh_plan", _build_market_price_refresh_plan)
     monkeypatch.setattr(
         module,
         "get_market_calendar_service",
@@ -735,15 +746,26 @@ def test_bootstrap_explicit_market_smart_refresh_uses_github_seed(monkeypatch):
     monkeypatch.setattr("app.wiring.bootstrap.get_price_cache", lambda: fake_price_cache)
     monkeypatch.setattr(module, "get_daily_price_bundle_service", lambda: github_service)
 
-    def _plan_price_refresh(db, **kwargs):
-        from app.services.price_refresh_planning import PriceRefreshPlan, PriceRefreshSource
+    def _build_market_price_refresh_plan(db, **kwargs):
+        from app.services.price_refresh_planning import (
+            GitHubSeedOutcome,
+            PriceRefreshPlan,
+            PriceRefreshSource,
+        )
 
-        github_seed = kwargs["github_seed"]
+        github_seed = GitHubSeedOutcome.from_mapping(
+            kwargs["sync_github_seed"](
+                db,
+                market=kwargs["effective_market"],
+                allow_stale=True,
+            )
+        )
         assert github_seed.status.value == "success"
         assert kwargs["mode"] == "bootstrap"
         plan = PriceRefreshPlan(
             symbols=(),
             jobs=(),
+            all_symbols=("0700.HK", "0005.HK"),
             github_seed=github_seed,
             github_seed_used=True,
             completion_message="GitHub daily price bundle is current - no live fetch needed",
@@ -751,7 +773,7 @@ def test_bootstrap_explicit_market_smart_refresh_uses_github_seed(monkeypatch):
         assert plan.source is PriceRefreshSource.GITHUB
         return plan
 
-    monkeypatch.setattr(module, "plan_price_refresh", _plan_price_refresh)
+    monkeypatch.setattr(module, "build_market_price_refresh_plan", _build_market_price_refresh_plan)
     monkeypatch.setattr(module, "mark_market_activity_started", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "mark_market_activity_completed", lambda *args, **kwargs: None)
     monkeypatch.setattr(

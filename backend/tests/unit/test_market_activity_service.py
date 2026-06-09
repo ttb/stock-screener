@@ -161,10 +161,10 @@ def test_runtime_activity_status_marks_running_stage_without_real_percent_as_ind
     assert us_market["percent"] is None
 
 
-def test_runtime_activity_record_from_payload_derives_response_fields():
-    from app.services.runtime_activity_contract import RuntimeActivityRecord
+def test_persisted_runtime_activity_derives_response_fields():
+    from app.services.runtime_activity_contract import PersistedRuntimeActivity
 
-    record = RuntimeActivityRecord.from_payload(
+    record = PersistedRuntimeActivity.from_payload(
         {
             "market": "jp",
             "lifecycle": "bootstrap",
@@ -178,7 +178,7 @@ def test_runtime_activity_record_from_payload_derives_response_fields():
             "task_id": "task-jp",
             "updated_at": "2026-06-09T01:02:03+00:00",
         }
-    )
+    ).to_record()
 
     assert record.market == "JP"
     assert record.stage_label == "Price Refresh"
@@ -189,11 +189,11 @@ def test_runtime_activity_record_from_payload_derives_response_fields():
     assert record.message == "Waiting on provider"
 
 
-def test_runtime_activity_record_from_payload_rejects_missing_persisted_fields():
-    from app.services.runtime_activity_contract import RuntimeActivityRecord
+def test_persisted_runtime_activity_rejects_missing_persisted_fields():
+    from app.services.runtime_activity_contract import PersistedRuntimeActivity
 
     with pytest.raises(ValueError, match="missing required runtime activity fields"):
-        RuntimeActivityRecord.from_payload(
+        PersistedRuntimeActivity.from_payload(
             {
                 "market": "US",
                 "stage_key": "prices",
@@ -203,7 +203,7 @@ def test_runtime_activity_record_from_payload_rejects_missing_persisted_fields()
             }
         )
 
-    record = RuntimeActivityRecord.from_payload(
+    record = PersistedRuntimeActivity.from_payload(
         {
             "market": "US",
             "lifecycle": "bootstrap",
@@ -219,7 +219,7 @@ def test_runtime_activity_record_from_payload_rejects_missing_persisted_fields()
             "task_id": "task-us",
             "updated_at": "2026-06-09T01:02:03+00:00",
         }
-    )
+    ).to_record()
     assert record.stage_label == "Price Refresh"
     assert record.progress_mode == "determinate"
 

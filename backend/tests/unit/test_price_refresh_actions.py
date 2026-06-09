@@ -1,43 +1,28 @@
 from __future__ import annotations
 
-import pytest
 
-
-def _preparation(*, refresh_plan, all_symbols=None):
-    from app.services.price_refresh_actions import PriceRefreshPreparation
-
-    return PriceRefreshPreparation(
-        all_symbols=list(all_symbols or []),
-        symbol_markets={},
-        refresh_plan=refresh_plan,
-    )
-
-
-def test_price_refresh_action_factory_returns_no_completion_when_plan_has_symbols():
-    from app.services.price_refresh_actions import PriceRefreshActionFactory
+def test_terminal_completion_helper_returns_none_when_plan_has_symbols():
+    from app.services import price_refresh_actions as module
+    from app.services.price_refresh_actions import build_terminal_completion
     from app.services.price_refresh_planning import PriceRefreshMode, PriceRefreshPlan
 
-    factory = PriceRefreshActionFactory(
-        last_completed_trading_day=lambda market: pytest.fail(
-            f"unexpected calendar lookup for {market}"
-        )
-    )
-
-    completion = factory.build_terminal_completion(
+    completion = build_terminal_completion(
         mode=PriceRefreshMode.BOOTSTRAP,
         effective_market="JP",
-        preparation=_preparation(
-            refresh_plan=PriceRefreshPlan(symbols=("7203.T",)),
+        plan=PriceRefreshPlan(symbols=("7203.T",)),
+        last_completed_trading_day=lambda market: (_ for _ in ()).throw(
+            AssertionError(f"unexpected calendar lookup for {market}")
         ),
     )
 
+    assert not hasattr(module, "PriceRefreshActionFactory")
     assert completion is None
 
 
-def test_price_refresh_action_factory_returns_terminal_completion():
+def test_terminal_completion_helper_returns_terminal_completion():
     from datetime import date
 
-    from app.services.price_refresh_actions import PriceRefreshActionFactory
+    from app.services.price_refresh_actions import build_terminal_completion
     from app.services.price_refresh_planning import (
         GitHubSeedOutcome,
         PriceRefreshMode,
@@ -55,21 +40,17 @@ def test_price_refresh_action_factory_returns_terminal_completion():
     assert github_seed is not None
     plan = PriceRefreshPlan(
         symbols=(),
+        all_symbols=("7203.T", "9984.T"),
         github_seed=github_seed,
         github_seed_used=True,
         completion_message="GitHub daily price bundle is current - no live fetch needed",
     )
-    factory = PriceRefreshActionFactory(
-        last_completed_trading_day=lambda market: date(2026, 6, 7)
-    )
 
-    completion = factory.build_terminal_completion(
+    completion = build_terminal_completion(
         mode=PriceRefreshMode.BOOTSTRAP,
         effective_market="JP",
-        preparation=_preparation(
-            refresh_plan=plan,
-            all_symbols=["7203.T", "9984.T"],
-        ),
+        plan=plan,
+        last_completed_trading_day=lambda market: date(2026, 6, 7),
     )
 
     assert completion is not None

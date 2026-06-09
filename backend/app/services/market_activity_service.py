@@ -15,7 +15,9 @@ from ..services.bootstrap_run_manifest import (
     BootstrapRunManifestRepository,
 )
 from ..services.runtime_activity_contract import (
+    PersistedRuntimeActivity,
     RuntimeActivityRecord,
+    RuntimeActivityUpdate,
     progress_mode,
     resolve_progress_percent,
 )
@@ -51,7 +53,7 @@ def _load_market_activity(db: Session, market: str) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     try:
-        return RuntimeActivityRecord.from_payload(payload).to_payload()
+        return PersistedRuntimeActivity.from_payload(payload).to_record().to_payload()
     except ValueError:
         return None
 
@@ -88,7 +90,7 @@ def save_runtime_bootstrap_run(
 def _save_market_activity(
     db: Session,
     market: str,
-    payload: dict[str, Any],
+    payload: RuntimeActivityUpdate | RuntimeActivityRecord | dict[str, Any],
 ) -> dict[str, Any]:
     key = _activity_key(market)
     setting = _get_setting(db, key)
@@ -107,7 +109,7 @@ def _save_market_activity(
         return transition.payload
     record = transition.record
 
-    encoded = json.dumps(record.to_persisted_payload())
+    encoded = json.dumps(PersistedRuntimeActivity.from_record(record).to_payload())
     if setting is None:
         setting = AppSetting(
             key=key,
@@ -136,8 +138,8 @@ def _activity_payload(
     current: int | None = None,
     total: int | None = None,
     message: str | None = None,
-) -> dict[str, Any]:
-    return RuntimeActivityRecord.create(
+) -> RuntimeActivityUpdate:
+    return RuntimeActivityUpdate(
         market=market,
         stage_key=stage_key,
         lifecycle=lifecycle,
@@ -149,7 +151,7 @@ def _activity_payload(
         total=total,
         message=message,
         updated_at=_utcnow_iso(),
-    ).to_payload()
+    )
 
 
 def mark_market_activity_queued(
@@ -221,23 +223,6 @@ def mark_market_activity_progress(
     total: int | None = None,
     message: str | None = None,
 ) -> dict[str, Any]:
-    existing = _load_market_activity(db, market)
-    if isinstance(existing, dict):
-        existing_task_id = existing.get("task_id")
-        existing_stage_key = existing.get("stage_key")
-        existing_status = existing.get("status")
-        can_inherit_existing_metadata = (
-            existing_status in {"queued", "running"}
-            and (not existing_task_id or not task_id or existing_task_id == task_id)
-            and (not existing_stage_key or existing_stage_key == stage_key)
-        )
-        if can_inherit_existing_metadata:
-            stage_key = existing_stage_key or stage_key
-            lifecycle = lifecycle or existing.get("lifecycle")
-            task_name = task_name or existing.get("task_name")
-            task_id = task_id or existing_task_id
-            message = message or existing.get("message")
-
     return _save_market_activity(
         db,
         market,

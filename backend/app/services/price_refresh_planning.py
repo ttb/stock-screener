@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
@@ -134,6 +134,8 @@ class PriceRefreshJob:
 class PriceRefreshPlan:
     symbols: tuple[str, ...]
     jobs: tuple[PriceRefreshJob, ...] = ()
+    all_symbols: tuple[str, ...] = ()
+    symbol_markets: Mapping[str, str] = field(default_factory=dict)
     github_seed: GitHubSeedOutcome | None = None
     github_seed_used: bool = False
     completion_message: str | None = None
@@ -147,6 +149,10 @@ class PriceRefreshPlan:
     @property
     def used_github_seed(self) -> bool:
         return self.github_seed_used
+
+    @property
+    def live_refresh_jobs(self) -> tuple[PriceRefreshJob, ...]:
+        return self.jobs
 
 
 def _normalize_symbols(symbols: Sequence[str]) -> tuple[str, ...]:
@@ -288,26 +294,92 @@ def plan_price_refresh(
         )
 
     if parsed_mode is PriceRefreshMode.AUTO:
-        return _plan_live_auto(
+        plan = _plan_live_auto(
             normalized_symbols,
             recently_refreshed_filter=recently_refreshed_filter,
         )
-    if parsed_mode is PriceRefreshMode.FULL:
-        return _plan_live_full(normalized_symbols)
-
-    if github_seed and github_seed.is_success:
-        return _plan_github_top_up(
+    elif parsed_mode is PriceRefreshMode.FULL:
+        plan = _plan_live_full(normalized_symbols)
+    elif github_seed and github_seed.is_success:
+        plan = _plan_github_top_up(
             db,
             symbols=normalized_symbols,
             effective_market=effective_market,
             github_seed=github_seed,
             market_calendar_service=market_calendar_service,
         )
+    else:
+        plan = _plan_live_top_up(
+            db,
+            symbols=normalized_symbols,
+            effective_market=effective_market,
+            market_calendar_service=market_calendar_service,
+            github_seed=github_seed,
+        )
 
-    return _plan_live_top_up(
+    return replace(plan, all_symbols=normalized_symbols)
+
+
+def load_active_price_refresh_universe(
+    db: Session,
+    *,
+    market: str | None,
+    effective_market: str,
+    normalize_market: Callable[[str], str],
+) -> tuple[tuple[str, ...], dict[str, str]]:
+    from ..models.stock_universe import StockUniverse
+
+    query = db.query(StockUniverse.symbol, StockUniverse.market).filter(
+        StockUniverse.is_active == True
+    )
+    if market is not None:
+        query = query.filter(StockUniverse.market == normalize_market(market))
+    query = query.order_by(StockUniverse.market_cap.desc().nullslast())
+    universe_rows = query.all()
+    all_symbols = tuple(row.symbol for row in universe_rows)
+    symbol_markets = {
+        str(row.symbol).upper(): normalize_market(
+            getattr(row, "market", None) or effective_market
+        )
+        for row in universe_rows
+    }
+    return all_symbols, symbol_markets
+
+
+def build_market_price_refresh_plan(
+    db: Session,
+    *,
+    mode: PriceRefreshMode | str,
+    market: str | None,
+    effective_market: str,
+    normalize_market: Callable[[str], str],
+    market_calendar_service,
+    sync_github_seed: Callable[..., Mapping[str, Any]],
+    recently_refreshed_filter: Callable[[Sequence[str]], Sequence[str]] | None = None,
+) -> PriceRefreshPlan:
+    parsed_mode = PriceRefreshMode.parse(mode)
+    all_symbols, symbol_markets = load_active_price_refresh_universe(
         db,
-        symbols=normalized_symbols,
+        market=market,
+        effective_market=effective_market,
+        normalize_market=normalize_market,
+    )
+    github_seed = None
+    if parsed_mode in LIVE_TOP_UP_MODES and all_symbols and market is not None:
+        github_seed = GitHubSeedOutcome.from_mapping(
+            sync_github_seed(db, market=effective_market, allow_stale=True)
+        )
+    plan = plan_price_refresh(
+        db,
+        all_symbols=all_symbols,
+        mode=parsed_mode,
         effective_market=effective_market,
         market_calendar_service=market_calendar_service,
         github_seed=github_seed,
+        recently_refreshed_filter=recently_refreshed_filter,
+    )
+    return replace(
+        plan,
+        all_symbols=all_symbols,
+        symbol_markets=symbol_markets,
     )
