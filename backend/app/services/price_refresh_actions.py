@@ -23,11 +23,23 @@ from .price_refresh_planning import (
 class PriceRefreshPreparation:
     all_symbols: list[str]
     symbol_markets: dict[str, str]
-    github_seed: GitHubSeedOutcome | None
     refresh_plan: PriceRefreshPlan
-    refresh_source: PriceRefreshSource
-    symbols: list[str]
-    live_refresh_jobs: list[PriceRefreshJob]
+
+    @property
+    def github_seed(self) -> GitHubSeedOutcome | None:
+        return self.refresh_plan.github_seed
+
+    @property
+    def refresh_source(self) -> PriceRefreshSource:
+        return self.refresh_plan.source
+
+    @property
+    def symbols(self) -> tuple[str, ...]:
+        return self.refresh_plan.symbols
+
+    @property
+    def live_refresh_jobs(self) -> tuple[PriceRefreshJob, ...]:
+        return self.refresh_plan.jobs
 
 
 @dataclass(frozen=True)
@@ -37,13 +49,17 @@ class PriceRefreshTerminalCompletion:
 
 
 @dataclass(frozen=True)
-class PriceRefreshAction:
+class LivePriceRefreshAction:
     preparation: PriceRefreshPreparation
-    terminal_completion: PriceRefreshTerminalCompletion | None = None
 
-    @property
-    def requires_live_fetch(self) -> bool:
-        return self.terminal_completion is None
+
+@dataclass(frozen=True)
+class TerminalPriceRefreshAction:
+    preparation: PriceRefreshPreparation
+    completion: PriceRefreshTerminalCompletion
+
+
+PriceRefreshAction = LivePriceRefreshAction | TerminalPriceRefreshAction
 
 
 class PriceRefreshActionFactory:
@@ -62,11 +78,11 @@ class PriceRefreshActionFactory:
         preparation: PriceRefreshPreparation,
     ) -> PriceRefreshAction:
         if preparation.symbols:
-            return PriceRefreshAction(preparation=preparation)
+            return LivePriceRefreshAction(preparation=preparation)
 
-        return PriceRefreshAction(
+        return TerminalPriceRefreshAction(
             preparation=preparation,
-            terminal_completion=self._terminal_completion(
+            completion=self._terminal_completion(
                 mode=mode,
                 effective_market=effective_market,
                 preparation=preparation,

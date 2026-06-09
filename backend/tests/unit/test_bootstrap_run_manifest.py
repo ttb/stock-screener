@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -71,3 +72,14 @@ def test_bootstrap_run_manifest_repository_round_trips_queueing_manifest_without
     finally:
         db.close()
         engine.dispose()
+
+
+def test_bootstrap_run_manifest_rejects_unknown_queue_state():
+    from app.services.bootstrap_run_manifest import BootstrapRunManifest
+
+    with pytest.raises(ValueError, match="invalid bootstrap queue_state"):
+        BootstrapRunManifest(
+            primary_market="US",
+            enabled_markets=("US",),
+            queue_state="almost_queued",
+        )

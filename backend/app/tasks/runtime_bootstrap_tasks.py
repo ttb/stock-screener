@@ -21,6 +21,7 @@ from ..services.market_activity_service import (
 )
 from ..services.bootstrap_run_manifest import (
     BootstrapRunManifest,
+    BootstrapQueueState,
     BootstrapRunManifestRepository,
 )
 from ..tasks.market_queues import (
@@ -45,6 +46,66 @@ class MarketReadinessCompletion:
     market: str
     ready: bool
     failure: ReadinessFailure | None = None
+
+
+@dataclass
+class BootstrapQueueManifestRecorder:
+    primary_market: str
+    enabled_markets: list[str]
+    market_task_ids: dict[str, str]
+    primary_task_id: str | None = None
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        primary_market: str,
+        enabled_markets: Iterable[str],
+    ) -> "BootstrapQueueManifestRecorder":
+        return cls(
+            primary_market=primary_market,
+            enabled_markets=list(enabled_markets),
+            market_task_ids={},
+        )
+
+    def record_queueing(self) -> None:
+        self._record(BootstrapQueueState.QUEUEING)
+
+    def record_dispatched_market(self, *, market: str, task_id: str) -> None:
+        market_code = normalize_market(market)
+        if market_code == self.primary_market:
+            self.primary_task_id = task_id
+        self.market_task_ids[market_code] = task_id
+        self.record_partial_safely()
+
+    def record_partial_safely(self) -> None:
+        try:
+            self._record(BootstrapQueueState.PARTIAL)
+        except Exception:
+            logger.warning(
+                "Failed to record partial bootstrap task manifest",
+                extra=self.log_extra(),
+                exc_info=True,
+            )
+
+    def record_queued(self) -> None:
+        self._record(BootstrapQueueState.QUEUED)
+
+    def _record(self, queue_state: BootstrapQueueState) -> None:
+        record_runtime_bootstrap_run(
+            primary_market=self.primary_market,
+            enabled_markets=self.enabled_markets,
+            primary_task_id=self.primary_task_id,
+            market_task_ids=self.market_task_ids,
+            queue_state=queue_state.value,
+        )
+
+    def log_extra(self) -> dict:
+        return {
+            "primary_market": self.primary_market,
+            "enabled_markets": self.enabled_markets,
+            "market_task_ids": self.market_task_ids,
+        }
 
 
 def _bootstrap_universe_name(market: str) -> str:
@@ -115,7 +176,7 @@ def record_runtime_bootstrap_run(
     enabled_markets: Iterable[str],
     primary_task_id: str | None = None,
     market_task_ids: dict[str, str | None] | None = None,
-    queue_state: str = "queued",
+    queue_state: BootstrapQueueState | str = BootstrapQueueState.QUEUED,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -192,36 +253,11 @@ def queue_local_runtime_bootstrap(*, primary_market: str, enabled_markets: Itera
 
     market_plans_by_code = {market_plan.market: market_plan for market_plan in plan.market_plans}
     primary_plan = market_plans_by_code[primary]
-    market_task_ids: dict[str, str] = {}
-    primary_task_id: str | None = None
-
-    def record_partial_manifest() -> None:
-        try:
-            record_runtime_bootstrap_run(
-                primary_market=primary,
-                enabled_markets=enabled,
-                primary_task_id=primary_task_id,
-                market_task_ids=market_task_ids,
-                queue_state="partial",
-            )
-        except Exception:
-            logger.warning(
-                "Failed to record partial bootstrap task manifest",
-                extra={
-                    "primary_market": primary,
-                    "enabled_markets": enabled,
-                    "market_task_ids": market_task_ids,
-                },
-                exc_info=True,
-            )
-
-    record_runtime_bootstrap_run(
+    manifest_recorder = BootstrapQueueManifestRecorder.create(
         primary_market=primary,
         enabled_markets=enabled,
-        primary_task_id=None,
-        market_task_ids={},
-        queue_state="queueing",
     )
+    manifest_recorder.record_queueing()
 
     try:
         primary_task = _queue_market_bootstrap_workflow(
@@ -231,9 +267,10 @@ def queue_local_runtime_bootstrap(*, primary_market: str, enabled_markets: Itera
             errback_task=fail_local_runtime_bootstrap,
             errback_kwargs={"primary_market": primary},
         )
-        primary_task_id = primary_task.id
-        market_task_ids[primary] = primary_task.id
-        record_partial_manifest()
+        manifest_recorder.record_dispatched_market(
+            market=primary,
+            task_id=primary_task.id,
+        )
 
         for market_plan in plan.market_plans:
             if market_plan.market == primary:
@@ -245,28 +282,20 @@ def queue_local_runtime_bootstrap(*, primary_market: str, enabled_markets: Itera
                 errback_task=fail_background_market_bootstrap,
                 errback_kwargs={"market": market_plan.market},
             )
-            market_task_ids[market_plan.market] = background_task.id
-            record_partial_manifest()
+            manifest_recorder.record_dispatched_market(
+                market=market_plan.market,
+                task_id=background_task.id,
+            )
 
     except Exception:
         raise
 
     try:
-        record_runtime_bootstrap_run(
-            primary_market=primary,
-            enabled_markets=enabled,
-            primary_task_id=primary_task_id,
-            market_task_ids=market_task_ids,
-            queue_state="queued",
-        )
+        manifest_recorder.record_queued()
     except Exception:
         logger.warning(
             "Queued bootstrap tasks but failed to record task manifest",
-            extra={
-                "primary_market": primary,
-                "enabled_markets": enabled,
-                "market_task_ids": market_task_ids,
-            },
+            extra=manifest_recorder.log_extra(),
             exc_info=True,
         )
 
@@ -275,10 +304,10 @@ def queue_local_runtime_bootstrap(*, primary_market: str, enabled_markets: Itera
         extra={
             "primary_market": primary,
             "enabled_markets": enabled,
-            "task_id": primary_task_id,
+            "task_id": manifest_recorder.primary_task_id,
         },
     )
-    return primary_task_id
+    return manifest_recorder.primary_task_id
 
 
 @celery_app.task(

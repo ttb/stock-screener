@@ -16,6 +16,7 @@ from ..services.price_refresh_actions import (
     PriceRefreshAction,
     PriceRefreshActionFactory,
     PriceRefreshPreparation,
+    TerminalPriceRefreshAction,
 )
 from ..services.price_refresh_activity import (
     CeleryTaskLike,
@@ -158,7 +159,7 @@ class PriceRefreshWorkflow:
                 effective_market=effective_market,
                 preparation=preparation,
             )
-            if not action.requires_live_fetch:
+            if isinstance(action, TerminalPriceRefreshAction):
                 return self._complete_terminal_action(
                     db,
                     price_cache,
@@ -356,11 +357,7 @@ class PriceRefreshWorkflow:
         preparation = PriceRefreshPreparation(
             all_symbols=all_symbols,
             symbol_markets=symbol_markets,
-            github_seed=refresh_plan.github_seed,
             refresh_plan=refresh_plan,
-            refresh_source=refresh_plan.source,
-            symbols=list(refresh_plan.symbols),
-            live_refresh_jobs=list(refresh_plan.jobs),
         )
         self._publish_github_seed_log(
             github_seed=preparation.github_seed,
@@ -413,10 +410,8 @@ class PriceRefreshWorkflow:
         market: str | None,
         effective_market: str,
         activity_lifecycle: str,
-        action: PriceRefreshAction,
+        action: TerminalPriceRefreshAction,
     ) -> dict[str, Any]:
-        if action.terminal_completion is None:
-            raise ValueError("price refresh action requires live fetch")
         self._deps.activity_reporter.finalize_success(
             db,
             price_cache,
@@ -424,9 +419,9 @@ class PriceRefreshWorkflow:
             market=market,
             effective_market=effective_market,
             lifecycle=activity_lifecycle,
-            finalization=action.terminal_completion.finalization,
+            finalization=action.completion.finalization,
         )
-        return action.terminal_completion.outcome.to_task_result()
+        return action.completion.outcome.to_task_result()
 
     def _execute_live_refresh(
         self,

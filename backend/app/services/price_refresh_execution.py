@@ -266,7 +266,9 @@ def iter_price_refresh_batches(
 def summarize_price_refresh_batches(
     batches: Sequence[PriceRefreshBatchOutcome],
 ) -> PriceRefreshExecutionSummary:
-    accumulator = PriceRefreshExecutionAccumulator()
+    accumulator = PriceRefreshExecutionAccumulator(
+        total=sum(len(batch.symbols) for batch in batches),
+    )
     for batch in batches:
         accumulator.add(batch)
     return accumulator.summary()

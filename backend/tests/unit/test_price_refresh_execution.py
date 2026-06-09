@@ -52,6 +52,8 @@ def test_iter_price_refresh_batches_returns_batch_outcomes_without_side_effect_c
     summary = summarize_price_refresh_batches(batches)
     assert summary.refreshed == 3
     assert summary.failed == 0
+    assert summary.total == 3
+    assert summary.processed == 3
     assert summary.failed_symbols == []
     assert summary.refreshed_by_market == Counter({"US": 2, "HK": 1})
 
