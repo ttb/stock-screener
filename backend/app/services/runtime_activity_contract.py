@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 ACTIVE_ACTIVITY_STATUSES = frozenset({"queued", "running"})
@@ -54,6 +54,13 @@ def stage_label(stage_key: str | None) -> str | None:
     if stage_key is None:
         return None
     return STAGE_LABELS.get(stage_key, str(stage_key).replace("_", " ").title())
+
+
+def bootstrap_stage_metadata() -> list[dict[str, str]]:
+    return [
+        {"key": stage_key, "label": stage_label(stage_key) or stage_key}
+        for stage_key in RUNTIME_STAGE_SEQUENCE
+    ]
 
 
 def default_lifecycle(stage_key: str | None) -> str:
@@ -277,24 +284,6 @@ class RuntimeActivityUpdate:
     total: int | None = None
     message: str | None = None
     updated_at: str | None = None
-
-    def inherit_context(self, existing: RuntimeActivityRecord | None) -> "RuntimeActivityUpdate":
-        if existing is None:
-            return self
-        if self.status != "running" or existing.status not in ACTIVE_ACTIVITY_STATUSES:
-            return self
-        if existing.task_id and self.task_id and existing.task_id != self.task_id:
-            return self
-        if existing.stage_key and existing.stage_key != self.stage_key:
-            return self
-        return replace(
-            self,
-            stage_key=existing.stage_key or self.stage_key,
-            lifecycle=self.lifecycle or existing.lifecycle,
-            task_name=self.task_name or existing.task_name,
-            task_id=self.task_id or existing.task_id,
-            message=self.message or existing.message,
-        )
 
     def to_record(self) -> RuntimeActivityRecord:
         return RuntimeActivityRecord.create(

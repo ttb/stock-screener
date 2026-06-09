@@ -26,6 +26,7 @@ from ...services.runtime_preferences_service import (
 )
 from ...services.runtime_universe_options import build_runtime_universe_options_payload
 from ...services.market_activity_service import get_runtime_activity_status
+from ...services.runtime_activity_contract import bootstrap_stage_metadata
 from ...tasks.runtime_bootstrap_tasks import queue_local_runtime_bootstrap
 
 router = APIRouter()
@@ -40,6 +41,7 @@ def _bootstrap_status_payload(status: object) -> dict[str, object]:
         "enabled_markets": list(getattr(status, "enabled_markets")),
         "bootstrap_state": str(getattr(status, "bootstrap_state")),
         "supported_markets": list(getattr(status, "supported_markets")),
+        "bootstrap_stages": bootstrap_stage_metadata(),
     }
 
 
@@ -65,6 +67,7 @@ async def get_app_capabilities(
         enabled_markets=bootstrap_status.enabled_markets,
         bootstrap_state=bootstrap_status.bootstrap_state,
         supported_markets=market_catalog.supported_market_codes(),
+        bootstrap_stages=bootstrap_stage_metadata(),
         market_catalog=market_catalog.as_runtime_payload(),
         universe_options=build_runtime_universe_options_payload(
             enabled_markets=bootstrap_status.enabled_markets,

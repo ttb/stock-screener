@@ -1142,6 +1142,28 @@ def test_runtime_activity_supports_scan_stage_progress(db_session, monkeypatch):
     assert hk_market["percent"] == 25.0
 
 
+def test_runtime_activity_status_exposes_bootstrap_stage_metadata(db_session, monkeypatch):
+    from app.services import market_activity_service as module
+
+    monkeypatch.setattr(
+        module,
+        "get_runtime_bootstrap_status",
+        lambda _db: _bootstrap_status(required=True, enabled=["US"], state="running"),
+    )
+    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
+
+    payload = module.get_runtime_activity_status(db_session)
+
+    assert payload["bootstrap"]["stages"] == [
+        {"key": "universe", "label": "Universe Refresh"},
+        {"key": "prices", "label": "Price Refresh"},
+        {"key": "fundamentals", "label": "Fundamentals Refresh"},
+        {"key": "breadth", "label": "Breadth Calculation"},
+        {"key": "groups", "label": "Group Rankings"},
+        {"key": "scan", "label": "Scan"},
+    ]
+
+
 def test_runtime_activity_status_returns_idle_markets_without_activity(db_session, monkeypatch):
     from app.services import market_activity_service as module
 

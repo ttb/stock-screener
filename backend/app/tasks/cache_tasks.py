@@ -27,7 +27,7 @@ from ..services.market_activity_service import (
     mark_market_activity_progress,
     mark_market_activity_started,
 )
-from ..services.price_refresh_planning import build_market_price_refresh_plan
+from ..services.price_refresh_plan_builder import build_market_price_refresh_plan
 from ..services.price_refresh_activity import (
     PriceRefreshActivityDependencies,
     PriceRefreshActivityReporter,

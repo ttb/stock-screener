@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy.orm import Session
-
-from .price_history_coverage import PriceHistoryCoverage, classify_price_history
+from .price_history_coverage import PriceHistoryCoverage
 
 
 STALE_PRICE_TOP_UP_PERIOD = "7d"
@@ -155,6 +153,18 @@ class PriceRefreshPlan:
         return self.jobs
 
 
+@dataclass(frozen=True)
+class PriceRefreshPlanningInput:
+    all_symbols: Sequence[str]
+    mode: PriceRefreshMode | str
+    effective_market: str
+    symbol_markets: Mapping[str, str] = field(default_factory=dict)
+    github_seed: GitHubSeedOutcome | None = None
+    coverage: PriceHistoryCoverage | None = None
+    target_as_of: date | None = None
+    auto_refresh_symbols: Sequence[str] | None = None
+
+
 def _normalize_symbols(symbols: Sequence[str]) -> tuple[str, ...]:
     return tuple(str(symbol).upper() for symbol in symbols)
 
@@ -206,36 +216,22 @@ def _plan_live_full(symbols: tuple[str, ...]) -> PriceRefreshPlan:
     return PriceRefreshPlan(symbols=symbols, jobs=jobs)
 
 
-def _plan_live_auto(
-    symbols: tuple[str, ...],
-    *,
-    recently_refreshed_filter: Callable[[Sequence[str]], Sequence[str]] | None,
-) -> PriceRefreshPlan:
-    refresh_symbols = (
-        _normalize_symbols(recently_refreshed_filter(symbols))
-        if recently_refreshed_filter is not None
-        else symbols
-    )
+def _plan_live_auto(symbols: tuple[str, ...]) -> PriceRefreshPlan:
     jobs = (
         PriceRefreshJob(
             kind=PriceRefreshJobKind.AUTO,
-            symbols=refresh_symbols,
+            symbols=symbols,
             period=NO_HISTORY_PRICE_BOOTSTRAP_PERIOD,
         ),
-    ) if refresh_symbols else ()
-    return PriceRefreshPlan(symbols=refresh_symbols, jobs=jobs)
+    ) if symbols else ()
+    return PriceRefreshPlan(symbols=symbols, jobs=jobs)
 
 
 def _plan_live_top_up(
-    db: Session,
+    coverage: PriceHistoryCoverage,
     *,
-    symbols: tuple[str, ...],
-    effective_market: str,
-    market_calendar_service,
     github_seed: GitHubSeedOutcome | None = None,
 ) -> PriceRefreshPlan:
-    target_as_of = market_calendar_service.last_completed_trading_day(effective_market)
-    coverage = classify_price_history(db, symbols=symbols, as_of_date=target_as_of)
     jobs = build_top_up_jobs(coverage)
     return PriceRefreshPlan(
         symbols=_symbols_from_jobs(jobs),
@@ -245,16 +241,12 @@ def _plan_live_top_up(
 
 
 def _plan_github_top_up(
-    db: Session,
+    coverage: PriceHistoryCoverage,
     *,
-    symbols: tuple[str, ...],
-    effective_market: str,
     github_seed: GitHubSeedOutcome,
-    market_calendar_service,
+    target_as_of: date | None,
 ) -> PriceRefreshPlan:
-    target_as_of = market_calendar_service.last_completed_trading_day(effective_market)
     github_as_of = github_seed.as_of_date
-    coverage = classify_price_history(db, symbols=symbols, as_of_date=target_as_of)
     jobs = build_top_up_jobs(coverage)
     live_symbols = _symbols_from_jobs(jobs)
     completion_message = None
@@ -273,19 +265,12 @@ def _plan_github_top_up(
     )
 
 
-def plan_price_refresh(
-    db: Session,
-    *,
-    all_symbols: Sequence[str],
-    mode: PriceRefreshMode | str,
-    effective_market: str,
-    market_calendar_service,
-    github_seed: GitHubSeedOutcome | None = None,
-    recently_refreshed_filter: Callable[[Sequence[str]], Sequence[str]] | None = None,
+def plan_price_refresh_from_input(
+    planning_input: PriceRefreshPlanningInput,
 ) -> PriceRefreshPlan:
-    """Plan live price-fetch work without performing any fetches."""
-    parsed_mode = PriceRefreshMode.parse(mode)
-    normalized_symbols = _normalize_symbols(all_symbols)
+    """Plan price-fetch work from precomputed, side-effect-free inputs."""
+    parsed_mode = PriceRefreshMode.parse(planning_input.mode)
+    normalized_symbols = _normalize_symbols(planning_input.all_symbols)
     if not normalized_symbols:
         return PriceRefreshPlan(
             symbols=(),
@@ -295,91 +280,32 @@ def plan_price_refresh(
 
     if parsed_mode is PriceRefreshMode.AUTO:
         plan = _plan_live_auto(
-            normalized_symbols,
-            recently_refreshed_filter=recently_refreshed_filter,
+            _normalize_symbols(planning_input.auto_refresh_symbols)
+            if planning_input.auto_refresh_symbols is not None
+            else normalized_symbols
         )
     elif parsed_mode is PriceRefreshMode.FULL:
         plan = _plan_live_full(normalized_symbols)
-    elif github_seed and github_seed.is_success:
+    elif planning_input.github_seed and planning_input.github_seed.is_success:
         plan = _plan_github_top_up(
-            db,
-            symbols=normalized_symbols,
-            effective_market=effective_market,
-            github_seed=github_seed,
-            market_calendar_service=market_calendar_service,
+            _require_coverage(planning_input),
+            github_seed=planning_input.github_seed,
+            target_as_of=planning_input.target_as_of,
         )
     else:
         plan = _plan_live_top_up(
-            db,
-            symbols=normalized_symbols,
-            effective_market=effective_market,
-            market_calendar_service=market_calendar_service,
-            github_seed=github_seed,
+            _require_coverage(planning_input),
+            github_seed=planning_input.github_seed,
         )
 
-    return replace(plan, all_symbols=normalized_symbols)
-
-
-def load_active_price_refresh_universe(
-    db: Session,
-    *,
-    market: str | None,
-    effective_market: str,
-    normalize_market: Callable[[str], str],
-) -> tuple[tuple[str, ...], dict[str, str]]:
-    from ..models.stock_universe import StockUniverse
-
-    query = db.query(StockUniverse.symbol, StockUniverse.market).filter(
-        StockUniverse.is_active == True
-    )
-    if market is not None:
-        query = query.filter(StockUniverse.market == normalize_market(market))
-    query = query.order_by(StockUniverse.market_cap.desc().nullslast())
-    universe_rows = query.all()
-    all_symbols = tuple(row.symbol for row in universe_rows)
-    symbol_markets = {
-        str(row.symbol).upper(): normalize_market(
-            getattr(row, "market", None) or effective_market
-        )
-        for row in universe_rows
-    }
-    return all_symbols, symbol_markets
-
-
-def build_market_price_refresh_plan(
-    db: Session,
-    *,
-    mode: PriceRefreshMode | str,
-    market: str | None,
-    effective_market: str,
-    normalize_market: Callable[[str], str],
-    market_calendar_service,
-    sync_github_seed: Callable[..., Mapping[str, Any]],
-    recently_refreshed_filter: Callable[[Sequence[str]], Sequence[str]] | None = None,
-) -> PriceRefreshPlan:
-    parsed_mode = PriceRefreshMode.parse(mode)
-    all_symbols, symbol_markets = load_active_price_refresh_universe(
-        db,
-        market=market,
-        effective_market=effective_market,
-        normalize_market=normalize_market,
-    )
-    github_seed = None
-    if parsed_mode in LIVE_TOP_UP_MODES and all_symbols and market is not None:
-        github_seed = GitHubSeedOutcome.from_mapping(
-            sync_github_seed(db, market=effective_market, allow_stale=True)
-        )
-    plan = plan_price_refresh(
-        db,
-        all_symbols=all_symbols,
-        mode=parsed_mode,
-        effective_market=effective_market,
-        market_calendar_service=market_calendar_service,
-        github_seed=github_seed,
-        recently_refreshed_filter=recently_refreshed_filter,
-    )
     return replace(
         plan,
-        all_symbols=all_symbols,
-        symbol_markets=symbol_markets,
+        all_symbols=normalized_symbols,
+        symbol_markets=dict(planning_input.symbol_markets),
     )
+
+
+def _require_coverage(planning_input: PriceRefreshPlanningInput) -> PriceHistoryCoverage:
+    if planning_input.coverage is None:
+        raise ValueError("price refresh top-up planning requires precomputed coverage")
+    return planning_input.coverage

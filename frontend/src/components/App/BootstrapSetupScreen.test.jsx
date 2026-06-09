@@ -519,6 +519,42 @@ describe('BootstrapSetupScreen', () => {
     expect(screen.queryByText(/Waiting for bootstrap task/)).not.toBeInTheDocument();
   });
 
+  it('renders bootstrap order from runtime activity stage metadata', () => {
+    useRuntimeActivityMock.mockReturnValue({
+      data: {
+        bootstrap: {
+          primary_market: 'US',
+          current_stage: 'Preparing bootstrap',
+          progress_mode: 'indeterminate',
+          percent: null,
+          message: 'Bootstrap queued.',
+          background_warning: null,
+          stages: [
+            { key: 'seed', label: 'Seed Import' },
+            { key: 'top_up', label: 'Live Top-Up' },
+          ],
+        },
+        markets: [],
+      },
+    });
+
+    renderWithProviders(
+      <BootstrapSetupScreen
+        primaryMarket="US"
+        enabledMarkets={['US']}
+        supportedMarkets={['US']}
+        bootstrapState="not_started"
+        isStartingBootstrap={false}
+        bootstrapError={null}
+        onStartBootstrap={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('1. Seed Import')).toBeInTheDocument();
+    expect(screen.getByText('2. Live Top-Up')).toBeInTheDocument();
+    expect(screen.queryByText('1. Universe refresh')).not.toBeInTheDocument();
+  });
+
   it('renders Market Catalog labels while submitting Market codes', () => {
     useRuntimeActivityMock.mockReturnValue({ data: null });
     const onStartBootstrap = vi.fn().mockResolvedValue();

@@ -50,6 +50,28 @@ def _postgres_recovery_error() -> OperationalError:
     )
 
 
+def _live_price_refresh_plan(symbol: str = "AAPL"):
+    from app.services.price_refresh_planning import (
+        NO_HISTORY_PRICE_BOOTSTRAP_PERIOD,
+        PriceRefreshJob,
+        PriceRefreshJobKind,
+        PriceRefreshPlan,
+    )
+
+    return PriceRefreshPlan(
+        symbols=(symbol,),
+        jobs=(
+            PriceRefreshJob(
+                kind=PriceRefreshJobKind.FULL,
+                symbols=(symbol,),
+                period=NO_HISTORY_PRICE_BOOTSTRAP_PERIOD,
+            ),
+        ),
+        all_symbols=(symbol,),
+        symbol_markets={symbol: "US"},
+    )
+
+
 @pytest_asyncio.fixture
 async def client():
     transport = httpx.ASGITransport(app=app)
@@ -118,6 +140,7 @@ def test_smart_refresh_cache_reraises_soft_time_limit(monkeypatch):
     monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
     monkeypatch.setattr(module, "get_eastern_now", lambda: SimpleNamespace(weekday=lambda: 6, hour=2, date=lambda: date(2026, 3, 22)))
     monkeypatch.setattr(module, "warm_spy_cache", MagicMock(side_effect=SoftTimeLimitExceeded()))
+    monkeypatch.setattr(module, "build_market_price_refresh_plan", lambda *args, **kwargs: _live_price_refresh_plan())
     monkeypatch.setattr(module, "safe_rollback", MagicMock())
     monkeypatch.setattr(
         "app.wiring.bootstrap.get_price_cache",
@@ -253,6 +276,7 @@ def test_smart_refresh_cache_publishes_failed_market_activity(monkeypatch):
         lambda: SimpleNamespace(weekday=lambda: 1, hour=17, date=lambda: date(2026, 3, 24)),
     )
     monkeypatch.setattr(module, "warm_spy_cache", MagicMock(side_effect=RuntimeError("benchmark unavailable")))
+    monkeypatch.setattr(module, "build_market_price_refresh_plan", lambda *args, **kwargs: _live_price_refresh_plan())
     monkeypatch.setattr(
         "app.wiring.bootstrap.get_price_cache",
         lambda: fake_price_cache,
@@ -290,6 +314,7 @@ def test_smart_refresh_cache_retries_transient_database_errors_from_task_body(mo
         lambda: SimpleNamespace(weekday=lambda: 1, hour=17, date=lambda: date(2026, 3, 24)),
     )
     monkeypatch.setattr(module, "warm_spy_cache", MagicMock(side_effect=_postgres_recovery_error()))
+    monkeypatch.setattr(module, "build_market_price_refresh_plan", lambda *args, **kwargs: _live_price_refresh_plan())
     monkeypatch.setattr(module, "safe_rollback", MagicMock())
     monkeypatch.setattr(
         "app.wiring.bootstrap.get_price_cache",
@@ -940,6 +965,7 @@ def test_smart_refresh_cache_rolls_back_before_failure_reporting(monkeypatch):
         lambda: SimpleNamespace(weekday=lambda: 1, hour=17, date=lambda: date(2026, 3, 24)),
     )
     monkeypatch.setattr(module, "warm_spy_cache", MagicMock(side_effect=RuntimeError("benchmark unavailable")))
+    monkeypatch.setattr(module, "build_market_price_refresh_plan", lambda *args, **kwargs: _live_price_refresh_plan())
     monkeypatch.setattr(module, "safe_rollback", MagicMock())
     monkeypatch.setattr(
         "app.wiring.bootstrap.get_price_cache",

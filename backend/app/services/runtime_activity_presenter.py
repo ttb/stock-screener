@@ -8,6 +8,7 @@ from .runtime_activity_contract import (
     ACTIVE_ACTIVITY_STATUSES,
     RUNTIME_STAGE_SEQUENCE,
     RuntimeActivityRecord,
+    bootstrap_stage_metadata,
     stage_index,
 )
 
@@ -135,6 +136,7 @@ def build_runtime_activity_status(
             "total": bootstrap_total,
             "message": bootstrap_message,
             "background_warning": background_warning,
+            "stages": bootstrap_stage_metadata(),
         },
         "summary": {
             "active_market_count": len(active_markets),

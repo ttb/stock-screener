@@ -28,6 +28,15 @@ const STATUS_COLOR = {
   idle: 'default',
 };
 
+const FALLBACK_BOOTSTRAP_STAGES = [
+  { key: 'universe', label: 'Universe Refresh' },
+  { key: 'prices', label: 'Price Refresh' },
+  { key: 'fundamentals', label: 'Fundamentals Refresh' },
+  { key: 'breadth', label: 'Breadth Calculation' },
+  { key: 'groups', label: 'Group Rankings' },
+  { key: 'scan', label: 'Scan' },
+];
+
 function formatCount(value) {
   return new Intl.NumberFormat('en-US').format(value);
 }
@@ -48,6 +57,19 @@ function normalizeEnabled(primaryMarket, enabledMarkets) {
     ? enabledMarkets
     : [primaryMarket, ...enabledMarkets];
   return Array.from(new Set(next));
+}
+
+function normalizeStages(stages) {
+  if (!Array.isArray(stages) || stages.length === 0) {
+    return FALLBACK_BOOTSTRAP_STAGES;
+  }
+  const normalized = stages
+    .map((stage) => ({
+      key: stage?.key,
+      label: stage?.label || stage?.key,
+    }))
+    .filter((stage) => stage.key && stage.label);
+  return normalized.length > 0 ? normalized : FALLBACK_BOOTSTRAP_STAGES;
 }
 
 export default function BootstrapSetupScreen({
@@ -121,6 +143,10 @@ export default function BootstrapSetupScreen({
     ? `${formatCount(bootstrap.current)} / ${formatCount(bootstrap.total)} stocks`
     : null;
   const bootstrapMessage = bootstrap?.message || 'Preparing market data.';
+  const bootstrapStages = useMemo(
+    () => normalizeStages(bootstrap?.stages),
+    [bootstrap?.stages]
+  );
 
   const toggleMarket = (market) => {
     if (market === selectedPrimary) {
@@ -316,21 +342,11 @@ export default function BootstrapSetupScreen({
               <Typography variant="subtitle2" sx={{ mb: 1 }}>
                 Bootstrap order
               </Typography>
-              <Typography color="text.secondary">
-                1. Universe refresh
-              </Typography>
-              <Typography color="text.secondary">
-                2. Benchmark and price refresh
-              </Typography>
-              <Typography color="text.secondary">
-                3. Fundamentals refresh
-              </Typography>
-              <Typography color="text.secondary">
-                4. Breadth and group rankings
-              </Typography>
-              <Typography color="text.secondary">
-                5. Initial autoscan snapshot
-              </Typography>
+              {bootstrapStages.map((stage, index) => (
+                <Typography key={stage.key} color="text.secondary">
+                  {index + 1}. {stage.label}
+                </Typography>
+              ))}
             </Box>
 
             <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>

@@ -166,6 +166,7 @@ class PriceRefreshWorkflow:
                     completion=terminal_completion,
                 )
 
+            self._warm_benchmarks(market=market)
             outcome = self._execute_live_refresh(
                 db,
                 price_cache,
@@ -295,11 +296,6 @@ class PriceRefreshWorkflow:
         log_extra: Mapping[str, Any],
     ) -> PriceRefreshPlan:
         gateway = self._deps.market_gateway
-        logger.info("[1/3] Warming market benchmarks...")
-        benchmark_result = self._deps.warm_benchmarks(market=market)
-        if benchmark_result.get("error"):
-            logger.error("Benchmark warmup failed: %s", benchmark_result.get("error"))
-
         def symbols_needing_auto_refresh(candidate_symbols: Sequence[str]) -> Sequence[str]:
             logger.info(
                 "Auto refresh: %d active symbols (full universe, market cap order) %s",
@@ -320,7 +316,7 @@ class PriceRefreshWorkflow:
             )
             return refresh_symbols
 
-        logger.info("[2/3] Determining symbols to refresh (mode=%s)...", mode.value)
+        logger.info("[1/2] Determining symbols to refresh (mode=%s)...", mode.value)
         refresh_plan = self._deps.build_refresh_plan(
             db,
             mode=mode,
@@ -352,6 +348,12 @@ class PriceRefreshWorkflow:
             log_extra=log_extra,
         )
         return refresh_plan
+
+    def _warm_benchmarks(self, *, market: str | None) -> None:
+        logger.info("Warming market benchmarks before live price fetch...")
+        benchmark_result = self._deps.warm_benchmarks(market=market)
+        if benchmark_result.get("error"):
+            logger.error("Benchmark warmup failed: %s", benchmark_result.get("error"))
 
     def _build_terminal_completion(
         self,
@@ -423,7 +425,7 @@ class PriceRefreshWorkflow:
             failed=0,
         )
 
-        logger.info("[3/3] Fetching %d symbols...", total)
+        logger.info("[2/2] Fetching %d symbols...", total)
         execution_result = self._deps.live_runner.run(
             task=task,
             bulk_fetcher=bulk_fetcher,

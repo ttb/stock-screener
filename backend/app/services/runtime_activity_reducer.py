@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .runtime_activity_contract import (
+    ACTIVE_ACTIVITY_STATUSES,
     RuntimeActivityRecord,
     RuntimeActivityUpdate,
     stage_index,
@@ -36,7 +37,7 @@ def _coerce_activity_record(
     if isinstance(payload, RuntimeActivityRecord):
         return payload
     if isinstance(payload, RuntimeActivityUpdate):
-        return payload.inherit_context(existing).to_record()
+        return _inherit_existing_context(existing, payload).to_record()
     try:
         return RuntimeActivityRecord.from_payload(payload)
     except ValueError:
@@ -67,11 +68,7 @@ def reduce_market_activity(
     incoming_has_owner = incoming.task_id is not None
 
     if existing_status == "running":
-        if payload_status == "queued" or (
-            payload_status != "failed" and not same_owner
-        ):
-            return RuntimeActivityTransition(should_persist=False, record=existing)
-        if payload_status == "failed" and not same_owner:
+        if payload_status == "queued" or not same_owner:
             return RuntimeActivityTransition(should_persist=False, record=existing)
     elif existing_status == "completed":
         if payload_status != "failed":
@@ -83,28 +80,62 @@ def reduce_market_activity(
             if not incoming_new_cycle:
                 return RuntimeActivityTransition(should_persist=False, record=existing)
     elif existing_status == "failed":
-        supersedes_failed_activity = _should_supersede_failed_activity(existing, incoming)
-        incoming_new_cycle = (
-            payload_status in {"queued", "running"}
-            and incoming_has_owner
-            and not same_owner
-        )
-        if incoming_new_cycle:
-            existing_stage_index = stage_index(existing.stage_key)
-            payload_stage_index = stage_index(incoming.stage_key)
-            lifecycle_changed = existing.lifecycle != incoming.lifecycle
-            incoming_new_cycle = (
-                lifecycle_changed or payload_stage_index <= existing_stage_index
-            )
-        if supersedes_failed_activity:
-            pass
-        elif payload_status == "failed" and same_owner:
+        if _should_supersede_failed_activity(existing, incoming):
+            return RuntimeActivityTransition(should_persist=True, record=incoming)
+        if payload_status == "failed" and same_owner:
             if _should_preserve_existing_failed_message(existing, incoming):
                 return RuntimeActivityTransition(should_persist=False, record=existing)
-        elif not incoming_new_cycle:
+        elif not _is_new_cycle_after_failed(
+            existing,
+            incoming,
+            same_owner=same_owner,
+            incoming_has_owner=incoming_has_owner,
+        ):
             return RuntimeActivityTransition(should_persist=False, record=existing)
 
     return RuntimeActivityTransition(should_persist=True, record=incoming)
+
+
+def _inherit_existing_context(
+    existing: RuntimeActivityRecord | None,
+    update: RuntimeActivityUpdate,
+) -> RuntimeActivityUpdate:
+    if existing is None or existing.status not in ACTIVE_ACTIVITY_STATUSES:
+        if update.status == "failed" and update.stage_key is None:
+            return replace(update, stage_key="scan")
+        return update
+    if update.status not in {"running", "failed"}:
+        return update
+    if existing.task_id and update.task_id and existing.task_id != update.task_id:
+        return update
+    if update.stage_key is not None and existing.stage_key != update.stage_key:
+        return update
+    if update.lifecycle is not None and existing.lifecycle != update.lifecycle:
+        return update
+    return replace(
+        update,
+        stage_key=update.stage_key or existing.stage_key,
+        lifecycle=update.lifecycle or existing.lifecycle,
+        task_name=update.task_name or existing.task_name,
+        task_id=update.task_id or existing.task_id,
+        message=update.message or existing.message,
+    )
+
+
+def _is_new_cycle_after_failed(
+    existing: RuntimeActivityRecord,
+    incoming: RuntimeActivityRecord,
+    *,
+    same_owner: bool,
+    incoming_has_owner: bool,
+) -> bool:
+    if incoming.status not in {"queued", "running"} or not incoming_has_owner or same_owner:
+        return False
+    lifecycle_changed = existing.lifecycle != incoming.lifecycle
+    payload_restarts_at_or_before_failed_stage = (
+        stage_index(incoming.stage_key) <= stage_index(existing.stage_key)
+    )
+    return lifecycle_changed or payload_restarts_at_or_before_failed_stage
 
 
 def _should_preserve_existing_failed_message(

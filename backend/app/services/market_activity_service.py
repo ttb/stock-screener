@@ -312,25 +312,18 @@ def mark_current_market_activity_failed(
     task_id: str | None = None,
     message: str | None = None,
 ) -> dict[str, Any]:
-    existing = _load_market_activity(db, market)
-    stage_key = "scan"
-    resolved_task_name = task_name
-    resolved_task_id = task_id
-    if isinstance(existing, dict) and existing.get("status") in {"queued", "running"}:
-        existing_lifecycle = existing.get("lifecycle")
-        if lifecycle is None or lifecycle == existing_lifecycle:
-            stage_key = existing.get("stage_key") or stage_key
-            lifecycle = lifecycle or existing_lifecycle
-            resolved_task_name = resolved_task_name or existing.get("task_name")
-            resolved_task_id = resolved_task_id or existing.get("task_id")
-    return mark_market_activity_failed(
+    return _save_market_activity(
         db,
-        market=market,
-        stage_key=stage_key,
-        lifecycle=lifecycle,
-        task_name=resolved_task_name,
-        task_id=resolved_task_id,
-        message=message,
+        market,
+        _activity_payload(
+            market=market,
+            stage_key=None,
+            lifecycle=lifecycle,
+            status="failed",
+            task_name=task_name,
+            task_id=task_id,
+            message=message,
+        ),
     )
 
 

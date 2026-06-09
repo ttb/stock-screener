@@ -152,6 +152,13 @@ class RuntimeUniverseOptionsResponse(BaseModel):
     markets: list[RuntimeUniverseMarketOptionsResponse]
 
 
+class BootstrapStageResponse(BaseModel):
+    """Canonical local bootstrap stage metadata."""
+
+    key: str
+    label: str
+
+
 class AppCapabilitiesResponse(BaseModel):
     """Feature/capability flags exposed to the frontend."""
 
@@ -163,6 +170,7 @@ class AppCapabilitiesResponse(BaseModel):
     enabled_markets: list[str] = Field(default_factory=lambda: ["US"])
     bootstrap_state: str = "not_started"
     supported_markets: list[str] = Field(default_factory=_supported_market_codes)
+    bootstrap_stages: list[BootstrapStageResponse] = Field(default_factory=list)
     market_catalog: MarketCatalogResponse
     universe_options: RuntimeUniverseOptionsResponse
     api_base_path: str = "/api"
@@ -178,6 +186,7 @@ class RuntimeBootstrapStatusResponse(BaseModel):
     enabled_markets: list[str]
     bootstrap_state: str
     supported_markets: list[str] = Field(default_factory=_supported_market_codes)
+    bootstrap_stages: list[BootstrapStageResponse] = Field(default_factory=list)
 
 
 class RuntimeBootstrapRequest(BaseModel):
@@ -210,6 +219,7 @@ class RuntimeActivityBootstrapResponse(BaseModel):
     total: int | None = None
     message: str | None = None
     background_warning: str | None = None
+    stages: list[BootstrapStageResponse] = Field(default_factory=list)
 
 
 class RuntimeActivitySummaryResponse(BaseModel):

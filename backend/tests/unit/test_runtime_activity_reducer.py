@@ -89,3 +89,40 @@ def test_reduce_market_activity_inherits_running_context_from_existing_record():
     assert transition.record.task_id == "task-us"
     assert transition.record.message == "Refreshing fundamentals"
     assert transition.record.percent == 25.0
+
+
+def test_runtime_activity_update_is_a_passive_value_object():
+    from app.services.runtime_activity_contract import RuntimeActivityUpdate
+
+    update = RuntimeActivityUpdate(
+        market="US",
+        stage_key="prices",
+        lifecycle=None,
+        status="running",
+        current=3,
+        total=10,
+    )
+
+    assert not hasattr(RuntimeActivityUpdate, "inherit_context")
+    assert update.to_record().task_id is None
+    assert update.to_record().message == "Running price refresh"
+
+
+def test_ownerless_failure_without_active_context_defaults_to_scan_stage():
+    from app.services.runtime_activity_contract import RuntimeActivityUpdate
+    from app.services.runtime_activity_reducer import reduce_market_activity
+
+    transition = reduce_market_activity(
+        None,
+        RuntimeActivityUpdate(
+            market="US",
+            stage_key=None,
+            lifecycle=None,
+            status="failed",
+            message="Task failed",
+        ),
+    )
+
+    assert transition.should_persist is True
+    assert transition.record.stage_key == "scan"
+    assert transition.record.stage_label == "Scan"
