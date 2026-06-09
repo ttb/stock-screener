@@ -448,17 +448,20 @@ def test_smart_refresh_cache_delta_prefers_github_daily_bundle_and_skips_live_fe
     )
 
     def _plan_price_refresh(db, **kwargs):
-        github_sync = kwargs["github_sync"]
-        assert github_sync["status"] == "success"
+        from app.services.price_refresh_planning import PriceRefreshPlan, PriceRefreshSource
+
+        github_seed = kwargs["github_seed"]
+        assert github_seed.status.value == "success"
         assert kwargs["mode"] == "delta"
-        return SimpleNamespace(
-            github_sync=github_sync,
-            used_github_seed=True,
-            source="github",
+        plan = PriceRefreshPlan(
             symbols=(),
             jobs=(),
+            github_seed=github_seed,
+            github_seed_used=True,
             completion_message="GitHub daily price bundle is current - no live fetch needed",
         )
+        assert plan.source is PriceRefreshSource.GITHUB
+        return plan
 
     monkeypatch.setattr(module, "plan_price_refresh", _plan_price_refresh)
     monkeypatch.setattr(
@@ -646,17 +649,20 @@ def test_bootstrap_explicit_market_smart_refresh_uses_github_seed(monkeypatch):
     monkeypatch.setattr(module, "get_daily_price_bundle_service", lambda: github_service)
 
     def _plan_price_refresh(db, **kwargs):
-        github_sync = kwargs["github_sync"]
-        assert github_sync["status"] == "success"
+        from app.services.price_refresh_planning import PriceRefreshPlan, PriceRefreshSource
+
+        github_seed = kwargs["github_seed"]
+        assert github_seed.status.value == "success"
         assert kwargs["mode"] == "bootstrap"
-        return SimpleNamespace(
-            github_sync=github_sync,
-            used_github_seed=True,
-            source="github",
+        plan = PriceRefreshPlan(
             symbols=(),
             jobs=(),
+            github_seed=github_seed,
+            github_seed_used=True,
             completion_message="GitHub daily price bundle is current - no live fetch needed",
         )
+        assert plan.source is PriceRefreshSource.GITHUB
+        return plan
 
     monkeypatch.setattr(module, "plan_price_refresh", _plan_price_refresh)
     monkeypatch.setattr(module, "mark_market_activity_started", lambda *args, **kwargs: None)

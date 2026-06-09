@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Iterable
 
 from celery import chain
@@ -17,7 +18,10 @@ from ..domain.bootstrap.plan import (
 from ..services.market_activity_service import (
     mark_current_market_activity_failed,
     mark_market_activity_failed,
-    save_runtime_bootstrap_run,
+)
+from ..services.bootstrap_run_manifest import (
+    BootstrapRunManifest,
+    BootstrapRunManifestRepository,
 )
 from ..tasks.market_queues import (
     data_fetch_queue_for_market,
@@ -114,12 +118,15 @@ def record_runtime_bootstrap_run(
 ) -> dict:
     db = SessionLocal()
     try:
-        return save_runtime_bootstrap_run(
+        return BootstrapRunManifestRepository().save(
             db,
-            primary_market=primary_market,
-            enabled_markets=list(enabled_markets),
-            primary_task_id=primary_task_id,
-            market_task_ids=market_task_ids,
+            BootstrapRunManifest.create(
+                primary_market=primary_market,
+                enabled_markets=enabled_markets,
+                primary_task_id=primary_task_id,
+                market_task_ids=market_task_ids,
+                queued_at=datetime.now(timezone.utc).isoformat(),
+            ),
         )
     finally:
         db.close()
@@ -208,12 +215,6 @@ def queue_local_runtime_bootstrap(*, primary_market: str, enabled_markets: Itera
             )
             market_task_ids[market_plan.market] = background_task.id
 
-        record_runtime_bootstrap_run(
-            primary_market=primary,
-            enabled_markets=enabled,
-            primary_task_id=primary_task.id,
-            market_task_ids=market_task_ids,
-        )
     except Exception:
         if primary_task_id is not None and market_task_ids:
             try:
@@ -234,6 +235,24 @@ def queue_local_runtime_bootstrap(*, primary_market: str, enabled_markets: Itera
                     exc_info=True,
                 )
         raise
+
+    try:
+        record_runtime_bootstrap_run(
+            primary_market=primary,
+            enabled_markets=enabled,
+            primary_task_id=primary_task_id,
+            market_task_ids=market_task_ids,
+        )
+    except Exception:
+        logger.warning(
+            "Queued bootstrap tasks but failed to record task manifest",
+            extra={
+                "primary_market": primary,
+                "enabled_markets": enabled,
+                "market_task_ids": market_task_ids,
+            },
+            exc_info=True,
+        )
 
     logger.info(
         "Queued local runtime bootstrap",

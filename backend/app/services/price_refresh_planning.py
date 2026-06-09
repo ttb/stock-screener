@@ -74,15 +74,11 @@ class GitHubSeedOutcome:
     reason: str | None = None
     error: str | None = None
     stale_reason: str | None = None
-    raw: Mapping[str, Any] | None = None
 
     @classmethod
     def from_mapping(
-        cls,
-        payload: "GitHubSeedOutcome | Mapping[str, Any] | None",
+        cls, payload: Mapping[str, Any] | None
     ) -> "GitHubSeedOutcome | None":
-        if isinstance(payload, cls):
-            return payload
         if not payload:
             return None
         raw_status = str(payload.get("status")) if payload.get("status") is not None else None
@@ -102,7 +98,6 @@ class GitHubSeedOutcome:
                 if payload.get("stale_reason") is not None
                 else None
             ),
-            raw=dict(payload),
         )
 
     @property
@@ -113,15 +108,8 @@ class GitHubSeedOutcome:
     def is_success(self) -> bool:
         return self.status in GITHUB_SYNC_SUCCESS_STATUSES
 
-    def get(self, key: str, default: Any = None) -> Any:
-        return self.to_mapping().get(key, default)
-
-    def __getitem__(self, key: str) -> Any:
-        return self.to_mapping()[key]
-
     def to_mapping(self) -> dict[str, Any]:
-        payload = dict(self.raw or {})
-        payload["status"] = self.status_value
+        payload: dict[str, Any] = {"status": self.status_value}
         if self.as_of_date is not None:
             payload["as_of_date"] = self.as_of_date.isoformat()
         if self.source_revision is not None:
@@ -160,10 +148,6 @@ class PriceRefreshPlan:
     def used_github_seed(self) -> bool:
         return self.github_seed_used
 
-    @property
-    def github_sync(self) -> Mapping[str, Any] | None:
-        return self.github_seed.to_mapping() if self.github_seed else None
-
 
 def _normalize_symbols(symbols: Sequence[str]) -> tuple[str, ...]:
     return tuple(str(symbol).upper() for symbol in symbols)
@@ -178,14 +162,6 @@ def _parse_bundle_date(value: Any) -> date | None:
         return datetime.fromisoformat(str(value)).date()
     except (TypeError, ValueError):
         return None
-
-
-def _normalize_github_seed(
-    github_sync: GitHubSeedOutcome | Mapping[str, Any] | None,
-) -> GitHubSeedOutcome | None:
-    if isinstance(github_sync, GitHubSeedOutcome):
-        return github_sync
-    return GitHubSeedOutcome.from_mapping(github_sync)
 
 
 def build_top_up_jobs(coverage: PriceHistoryCoverage) -> tuple[PriceRefreshJob, ...]:
@@ -298,12 +274,11 @@ def plan_price_refresh(
     mode: PriceRefreshMode | str,
     effective_market: str,
     market_calendar_service,
-    github_sync: GitHubSeedOutcome | Mapping[str, Any] | None = None,
+    github_seed: GitHubSeedOutcome | None = None,
     recently_refreshed_filter: Callable[[Sequence[str]], Sequence[str]] | None = None,
 ) -> PriceRefreshPlan:
     """Plan live price-fetch work without performing any fetches."""
     parsed_mode = PriceRefreshMode.parse(mode)
-    github_seed = _normalize_github_seed(github_sync)
     normalized_symbols = _normalize_symbols(all_symbols)
     if not normalized_symbols:
         return PriceRefreshPlan(

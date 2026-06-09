@@ -28,7 +28,17 @@ from ..services.market_activity_service import (
     mark_market_activity_started,
 )
 from ..services.price_refresh_planning import plan_price_refresh
+from ..services.price_refresh_activity import (
+    PriceRefreshActivityDependencies,
+    PriceRefreshActivityReporter,
+)
+from ..services.price_refresh_live_runner import (
+    LivePriceRefreshRunner,
+    LivePriceRefreshRunnerDependencies,
+    PriceRefreshRetryScheduler,
+)
 from ..services.price_refresh_workflow import (
+    PriceRefreshMarketGateway,
     PriceRefreshWorkflow,
     PriceRefreshWorkflowDependencies,
 )
@@ -1625,33 +1635,47 @@ def run_smart_price_refresh(
 ) -> dict:
     from ..services.bulk_data_fetcher import BulkDataFetcher
     from ..services.runtime_preferences_service import is_market_enabled_now
-    from ..wiring.bootstrap import get_price_cache
+    from ..wiring.bootstrap import get_data_fetch_lock, get_price_cache
     from .market_queues import market_tag, log_extra, normalize_market
 
+    activity_reporter = PriceRefreshActivityReporter(
+        PriceRefreshActivityDependencies(
+            record_market_refresh_success=_record_market_refresh_success_safely,
+            mark_market_activity_started=mark_market_activity_started,
+            mark_market_activity_completed=mark_market_activity_completed,
+            mark_market_activity_progress_safely=_mark_market_activity_progress_safely,
+            mark_market_activity_failed_safely=_mark_market_activity_failed_safely,
+        )
+    )
+    live_runner = LivePriceRefreshRunner(
+        LivePriceRefreshRunnerDependencies(
+            fetch_with_backoff=_fetch_with_backoff,
+            track_symbol_failures=_track_symbol_failures,
+            rate_limiter_factory=get_rate_limiter,
+            data_fetch_lock_factory=get_data_fetch_lock,
+            raise_if_transient_database_error=raise_if_transient_database_error,
+        )
+    )
     dependencies = PriceRefreshWorkflowDependencies(
         session_factory=SessionLocal,
         price_cache_factory=get_price_cache,
         bulk_fetcher_factory=BulkDataFetcher,
         warm_benchmarks=warm_spy_cache,
         plan_price_refresh=plan_price_refresh,
-        fetch_with_backoff=_fetch_with_backoff,
-        track_symbol_failures=_track_symbol_failures,
-        schedule_failed_symbol_retry=_schedule_failed_symbol_retry,
-        record_market_refresh_success=_record_market_refresh_success_safely,
-        mark_market_activity_started=mark_market_activity_started,
-        mark_market_activity_completed=mark_market_activity_completed,
-        mark_market_activity_progress_safely=_mark_market_activity_progress_safely,
-        mark_market_activity_failed_safely=_mark_market_activity_failed_safely,
         daily_price_bundle_service_factory=get_daily_price_bundle_service,
         market_calendar_service_factory=get_market_calendar_service,
-        rate_limiter_factory=get_rate_limiter,
-        normalize_market=normalize_market,
-        market_tag=market_tag,
-        log_extra=log_extra,
-        get_eastern_now=get_eastern_now,
-        is_trading_day=is_trading_day,
-        format_market_status=format_market_status,
-        is_market_enabled_now=is_market_enabled_now,
+        activity_reporter=activity_reporter,
+        live_runner=live_runner,
+        retry_scheduler=PriceRefreshRetryScheduler(_schedule_failed_symbol_retry),
+        market_gateway=PriceRefreshMarketGateway(
+            normalize_market=normalize_market,
+            market_tag=market_tag,
+            log_extra=log_extra,
+            get_eastern_now=get_eastern_now,
+            is_trading_day=is_trading_day,
+            format_market_status=format_market_status,
+            is_market_enabled_now=is_market_enabled_now,
+        ),
         raise_if_transient_database_error=raise_if_transient_database_error,
         safe_rollback=safe_rollback,
         time_window_bypass_enabled=lambda: _SMART_REFRESH_TIME_WINDOW_BYPASS.get(),

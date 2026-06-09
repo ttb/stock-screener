@@ -1,12 +1,12 @@
-"""Live execution helpers for planned price refresh jobs."""
+"""Live fetch execution helpers for planned price refresh jobs."""
 
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 import logging
-from typing import Any, Protocol
+from typing import Any
 
 from celery.exceptions import SoftTimeLimitExceeded
 
@@ -19,59 +19,35 @@ MappingResult = Mapping[str, Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
-class PriceRefreshExecutionResult:
+class PriceRefreshBatchOutcome:
+    batch_number: int
+    total_batches: int
+    job: PriceRefreshJob
+    symbols: tuple[str, ...]
+    price_data_by_symbol: Mapping[str, Any]
+    successes: tuple[str, ...]
+    failures: tuple[str, ...]
+    failure_details: Mapping[str, str]
+    refreshed_by_market: Counter[str] = field(default_factory=Counter)
+    failed_by_market: Counter[str] = field(default_factory=Counter)
+
+    @property
+    def refreshed(self) -> int:
+        return len(self.successes)
+
+    @property
+    def failed(self) -> int:
+        return len(self.failures)
+
+
+@dataclass(frozen=True)
+class PriceRefreshExecutionSummary:
     refreshed: int
     failed: int
     failed_symbols: list[str]
     refreshed_by_market: Counter[str] = field(default_factory=Counter)
     failed_by_market: Counter[str] = field(default_factory=Counter)
-
-
-class PriceRefreshExecutionContext(Protocol):
-    def fetch_batch(
-        self,
-        symbols: Sequence[str],
-        *,
-        period: str,
-        market: str | None,
-    ) -> MappingResult:
-        ...
-
-    def store_prices(self, price_data_by_symbol: Mapping[str, Any]) -> None:
-        ...
-
-    def track_symbol_failures(
-        self,
-        successes: Sequence[str],
-        failures: Sequence[str],
-        *,
-        failure_details: Mapping[str, str],
-    ) -> None:
-        ...
-
-    def market_for_symbol(self, symbol: str) -> str:
-        ...
-
-    def publish_progress(
-        self,
-        current: int,
-        total: int,
-        percent: float,
-        message: str,
-        *,
-        refreshed: int,
-        failed: int,
-    ) -> None:
-        ...
-
-    def extend_lock(self) -> None:
-        ...
-
-    def wait_between_batches(self) -> None:
-        ...
-
-    def raise_if_transient_database_error(self, exc: Exception) -> None:
-        ...
+    processed: int = 0
 
 
 def _total_batches(jobs: Sequence[PriceRefreshJob], batch_size: int) -> int:
@@ -98,145 +74,176 @@ def _record_failure(
     *,
     symbol: str,
     reason: str,
-    failed_symbols: list[str],
+    failures: list[str],
     failed_by_market: Counter[str],
-    batch_failures: list[str],
     failure_details: dict[str, str],
-    context: PriceRefreshExecutionContext,
+    market_for_symbol: Callable[[str], str],
 ) -> None:
-    failed_symbols.append(symbol)
-    failed_by_market[context.market_for_symbol(symbol)] += 1
-    batch_failures.append(symbol)
+    failures.append(symbol)
+    failed_by_market[market_for_symbol(symbol)] += 1
     failure_details[symbol] = reason
 
 
-def run_price_refresh_jobs(
+def _classify_batch_results(
     *,
-    jobs: Sequence[PriceRefreshJob],
-    total: int,
-    batch_size: int,
-    market: str | None,
-    context: PriceRefreshExecutionContext,
-) -> PriceRefreshExecutionResult:
-    total_batches = _total_batches(jobs, batch_size)
-    refreshed = 0
-    failed = 0
-    failed_symbols: list[str] = []
+    symbols: Sequence[str],
+    batch_results: MappingResult,
+    market_for_symbol: Callable[[str], str],
+) -> tuple[
+    dict[str, Any],
+    tuple[str, ...],
+    tuple[str, ...],
+    dict[str, str],
+    Counter[str],
+    Counter[str],
+]:
+    price_data_by_symbol: dict[str, Any] = {}
+    successes: list[str] = []
+    failures: list[str] = []
+    failure_details: dict[str, str] = {}
     refreshed_by_market: Counter[str] = Counter()
     failed_by_market: Counter[str] = Counter()
-    processed_count = 0
-    batch_num = 0
 
+    for symbol in symbols:
+        data = _result_for_symbol(batch_results, symbol)
+        if data is None:
+            _record_failure(
+                symbol=symbol,
+                reason="No data returned",
+                failures=failures,
+                failed_by_market=failed_by_market,
+                failure_details=failure_details,
+                market_for_symbol=market_for_symbol,
+            )
+            continue
+        if not data.get("has_error") and data.get("price_data") is not None:
+            price_df = data["price_data"]
+            if not price_df.empty:
+                price_data_by_symbol[symbol] = price_df
+                successes.append(symbol)
+                refreshed_by_market[market_for_symbol(symbol)] += 1
+                continue
+            _record_failure(
+                symbol=symbol,
+                reason="Empty data returned",
+                failures=failures,
+                failed_by_market=failed_by_market,
+                failure_details=failure_details,
+                market_for_symbol=market_for_symbol,
+            )
+            continue
+        _record_failure(
+            symbol=symbol,
+            reason=str(data.get("error", "Unknown error")),
+            failures=failures,
+            failed_by_market=failed_by_market,
+            failure_details=failure_details,
+            market_for_symbol=market_for_symbol,
+        )
+
+    return (
+        price_data_by_symbol,
+        tuple(successes),
+        tuple(failures),
+        failure_details,
+        refreshed_by_market,
+        failed_by_market,
+    )
+
+
+def iter_price_refresh_batches(
+    *,
+    jobs: Sequence[PriceRefreshJob],
+    batch_size: int,
+    market: str | None,
+    fetch_batch: Callable[..., MappingResult],
+    market_for_symbol: Callable[[str], str],
+    raise_if_transient_database_error: Callable[[Exception], None],
+) -> Iterator[PriceRefreshBatchOutcome]:
+    total_batches = _total_batches(jobs, batch_size)
+    batch_number = 0
     for job in jobs:
-        job_symbols = list(job.symbols)
+        job_symbols = tuple(job.symbols)
         for batch_start in range(0, len(job_symbols), batch_size):
             batch_symbols = job_symbols[batch_start:batch_start + batch_size]
-            batch_num += 1
-
+            batch_number += 1
             logger.info(
                 "Batch %d/%d: Fetching %d symbols (%s, period=%s)",
-                batch_num,
+                batch_number,
                 total_batches,
                 len(batch_symbols),
-                job.kind,
+                job.kind.value,
                 job.period,
             )
 
-            batch_successes: list[str] = []
-            batch_failures: list[str] = []
-            failure_details: dict[str, str] = {}
-
             try:
-                batch_results = context.fetch_batch(
+                batch_results = fetch_batch(
                     batch_symbols,
                     period=job.period,
                     market=market,
                 )
-                batch_to_store = {}
-                for symbol in batch_symbols:
-                    data = _result_for_symbol(batch_results, symbol)
-                    if data is None:
-                        failed += 1
-                        _record_failure(
-                            symbol=symbol,
-                            reason="No data returned",
-                            failed_symbols=failed_symbols,
-                            failed_by_market=failed_by_market,
-                            batch_failures=batch_failures,
-                            failure_details=failure_details,
-                            context=context,
-                        )
-                        continue
-                    if not data.get("has_error") and data.get("price_data") is not None:
-                        price_df = data["price_data"]
-                        if not price_df.empty:
-                            batch_to_store[symbol] = price_df
-                            refreshed += 1
-                            refreshed_by_market[context.market_for_symbol(symbol)] += 1
-                            batch_successes.append(symbol)
-                        else:
-                            failed += 1
-                            _record_failure(
-                                symbol=symbol,
-                                reason="Empty data returned",
-                                failed_symbols=failed_symbols,
-                                failed_by_market=failed_by_market,
-                                batch_failures=batch_failures,
-                                failure_details=failure_details,
-                                context=context,
-                            )
-                    else:
-                        failed += 1
-                        _record_failure(
-                            symbol=symbol,
-                            reason=str(data.get("error", "Unknown error")),
-                            failed_symbols=failed_symbols,
-                            failed_by_market=failed_by_market,
-                            batch_failures=batch_failures,
-                            failure_details=failure_details,
-                            context=context,
-                        )
-
-                if batch_to_store:
-                    context.store_prices(batch_to_store)
-
+                (
+                    price_data_by_symbol,
+                    successes,
+                    failures,
+                    failure_details,
+                    refreshed_by_market,
+                    failed_by_market,
+                ) = _classify_batch_results(
+                    symbols=batch_symbols,
+                    batch_results=batch_results,
+                    market_for_symbol=market_for_symbol,
+                )
             except SoftTimeLimitExceeded:
                 raise
             except Exception as exc:
-                context.raise_if_transient_database_error(exc)
-                logger.error("Batch %d error: %s", batch_num, exc)
-                failed += len(batch_symbols)
-                failed_symbols.extend(batch_symbols)
-                failed_by_market.update(context.market_for_symbol(symbol) for symbol in batch_symbols)
-                batch_failures.extend(batch_symbols)
-                failure_details.update({symbol: str(exc) for symbol in batch_symbols})
+                raise_if_transient_database_error(exc)
+                logger.error("Batch %d error: %s", batch_number, exc)
+                price_data_by_symbol = {}
+                successes = ()
+                failures = batch_symbols
+                failure_details = {symbol: str(exc) for symbol in batch_symbols}
+                refreshed_by_market = Counter()
+                failed_by_market = Counter(
+                    market_for_symbol(symbol) for symbol in batch_symbols
+                )
 
-            context.track_symbol_failures(
-                batch_successes,
-                batch_failures,
+            yield PriceRefreshBatchOutcome(
+                batch_number=batch_number,
+                total_batches=total_batches,
+                job=job,
+                symbols=batch_symbols,
+                price_data_by_symbol=price_data_by_symbol,
+                successes=successes,
+                failures=failures,
                 failure_details=failure_details,
+                refreshed_by_market=refreshed_by_market,
+                failed_by_market=failed_by_market,
             )
 
-            processed_count += len(batch_symbols)
-            progress = min(processed_count, total)
-            percent = (progress / total) * 100 if total else 100.0
-            context.publish_progress(
-                progress,
-                total,
-                percent,
-                f"Batch {batch_num}/{total_batches} · refreshing prices",
-                refreshed=refreshed,
-                failed=failed,
-            )
-            context.extend_lock()
 
-            if processed_count < total:
-                context.wait_between_batches()
+def summarize_price_refresh_batches(
+    batches: Sequence[PriceRefreshBatchOutcome],
+) -> PriceRefreshExecutionSummary:
+    refreshed_by_market: Counter[str] = Counter()
+    failed_by_market: Counter[str] = Counter()
+    failed_symbols: list[str] = []
+    refreshed = 0
+    failed = 0
+    processed = 0
+    for batch in batches:
+        processed += len(batch.symbols)
+        refreshed += batch.refreshed
+        failed += batch.failed
+        failed_symbols.extend(batch.failures)
+        refreshed_by_market.update(batch.refreshed_by_market)
+        failed_by_market.update(batch.failed_by_market)
 
-    return PriceRefreshExecutionResult(
+    return PriceRefreshExecutionSummary(
         refreshed=refreshed,
         failed=failed,
         failed_symbols=failed_symbols,
         refreshed_by_market=refreshed_by_market,
         failed_by_market=failed_by_market,
+        processed=processed,
     )
