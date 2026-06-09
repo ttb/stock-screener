@@ -503,6 +503,72 @@ def test_fetch_prices_in_batches_shrinks_on_attempted_transient_failures(monkeyp
     breaker.record_429.assert_called_once_with("yfinance", "JP")
 
 
+def test_fetch_prices_in_batches_ignores_invalid_only_batches_for_growth(monkeypatch):
+    fetcher = BulkDataFetcher()
+    observed_batches: list[tuple[list[str], int]] = []
+    breaker = MagicMock()
+    breaker.check.return_value = "closed"
+
+    def fake_fetch_price_batch_with_retries(
+        batch_symbols,
+        *,
+        period,
+        initial_batch_size,
+        market=None,
+    ):
+        _ = period
+        _ = market
+        observed_batches.append((list(batch_symbols), initial_batch_size))
+        if all(symbol.startswith("0") for symbol in batch_symbols):
+            return {
+                symbol: fetcher._build_error_result(
+                    symbol,
+                    "JP local code is zero-prefixed",
+                    error_kind="no_price_data",
+                )
+                for symbol in batch_symbols
+            }
+        return {symbol: _success_result(symbol) for symbol in batch_symbols}
+
+    class _StubRateLimiter:
+        @staticmethod
+        def wait(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def wait_for_market(*args, **kwargs):
+            return None
+
+    invalid_symbols = [f"{index:04d}.T" for index in range(1, 126)]
+    valid_symbols = [f"SYM{index}" for index in range(25)]
+
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_price_batch_with_retries",
+        fake_fetch_price_batch_with_retries,
+    )
+    monkeypatch.setattr(fetcher, "_rate_limiter", _StubRateLimiter())
+    monkeypatch.setattr(
+        "app.services.provider_circuit_breaker.get_circuit_breaker",
+        lambda: breaker,
+    )
+
+    fetcher._fetch_yfinance_prices_in_batches(
+        [*invalid_symbols, *valid_symbols],
+        period="2y",
+        start_batch_size=25,
+        market="JP",
+    )
+
+    valid_batch_sizes = [
+        batch_size
+        for batch_symbols, batch_size in observed_batches
+        if batch_symbols[0].startswith("SYM")
+    ]
+    assert valid_batch_sizes == [25]
+    breaker.record_success.assert_called_once_with("yfinance", "JP")
+
+
 def test_fetch_prices_in_batches_uses_krx_first_for_korea(monkeypatch):
     price_frame = _price_df(date(2026, 4, 29), 105.0)
     krx_service = MagicMock()

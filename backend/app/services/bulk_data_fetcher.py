@@ -11,7 +11,7 @@ docs/learning_loop/adr_ll2_e1_canonical_price_contract_v1.md
 import logging
 import math
 from collections.abc import Callable
-from typing import TYPE_CHECKING, List, Dict, Optional, Any
+from typing import TYPE_CHECKING, List, Dict, Optional, Any, NamedTuple
 from threading import RLock
 import yfinance as yf
 from datetime import datetime
@@ -35,6 +35,11 @@ if TYPE_CHECKING:
     from .rate_limiter import RedisRateLimiter
 
 logger = logging.getLogger(__name__)
+
+
+class _PriceFailureMetric(NamedTuple):
+    provider_signal_count: int
+    transient_failure_rate: float
 
 
 def _finite_or_none(value: Any) -> Any:
@@ -187,18 +192,24 @@ class BulkDataFetcher:
             )
         return fetchable, permanent_failures
 
-    def _transient_failure_rate(self, results: Dict[str, Dict[str, Any]]) -> float:
+    def _price_failure_metric(
+        self,
+        results: Dict[str, Dict[str, Any]],
+    ) -> _PriceFailureMetric:
         if not results:
-            return 1.0
+            return _PriceFailureMetric(
+                provider_signal_count=1,
+                transient_failure_rate=1.0,
+            )
 
-        retryable_results = 0
+        provider_signal_count = 0
         transient_failures = 0
         for data in results.values():
             error = data.get("error", "")
             error_kind = normalize_price_fetch_failure_kind(data.get("error_kind"))
             if not is_retryable_price_failure(kind=error_kind, error=error):
                 continue
-            retryable_results += 1
+            provider_signal_count += 1
             if not data.get("has_error"):
                 continue
             if (
@@ -207,9 +218,15 @@ class BulkDataFetcher:
                 or "empty" in error.lower()
             ):
                 transient_failures += 1
-        if retryable_results == 0:
-            return 0.0
-        return transient_failures / retryable_results
+        if provider_signal_count == 0:
+            return _PriceFailureMetric(
+                provider_signal_count=0,
+                transient_failure_rate=0.0,
+            )
+        return _PriceFailureMetric(
+            provider_signal_count=provider_signal_count,
+            transient_failure_rate=transient_failures / provider_signal_count,
+        )
 
     def fetch_batch_data(
         self,
@@ -742,7 +759,8 @@ class BulkDataFetcher:
             )
             combined_results.update(batch_results)
 
-            failure_rate = self._transient_failure_rate(batch_results)
+            failure_metric = self._price_failure_metric(batch_results)
+            failure_rate = failure_metric.transient_failure_rate
             if failure_rate > 0.20:
                 success_streak = 0
                 batch_size = max(self.MIN_PRICE_BATCH_SIZE, batch_size // 2)
@@ -750,7 +768,7 @@ class BulkDataFetcher:
                 # Sustained transient failure → pulse the breaker. Threshold
                 # tripping is done after consecutive batches.
                 breaker.record_429("yfinance", market)
-            else:
+            elif failure_metric.provider_signal_count > 0:
                 if growth_cooldown_remaining > 0:
                     growth_cooldown_remaining -= 1
                 if failure_rate < 0.02:
@@ -880,8 +898,13 @@ class BulkDataFetcher:
 
             attempt_results = {**permanent_failures, **fetch_results}
             last_results = attempt_results
-            failure_rate = self._transient_failure_rate(attempt_results)
-            if failure_rate <= 0.20 or attempt == len(backoff_schedule):
+            failure_metric = self._price_failure_metric(attempt_results)
+            failure_rate = failure_metric.transient_failure_rate
+            if (
+                failure_metric.provider_signal_count == 0
+                or failure_rate <= 0.20
+                or attempt == len(backoff_schedule)
+            ):
                 return attempt_results
 
             current_batch_size = max(self.MIN_PRICE_BATCH_SIZE, current_batch_size // 2)
