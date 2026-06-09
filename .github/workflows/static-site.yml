@@ -646,11 +646,49 @@ jobs:
       - name: Validate market artifacts
         run: |
           mkdir -p /tmp/static-market-artifacts-current /tmp/static-market-artifacts-fallback
-          find /tmp/static-market-artifacts-current /tmp/static-market-artifacts-fallback -type f -name 'manifest.market.json'
-          if ! find /tmp/static-market-artifacts-current /tmp/static-market-artifacts-fallback -type f -name 'manifest.market.json' | grep -q .; then
-            echo "No current or fallback market artifacts are available." >&2
-            exit 1
-          fi
+          cd backend
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          from app.domain.markets import market_registry
+
+          # Every scheduled run builds only one market group; the rest must be
+          # back-filled from a previous run's artifacts. Publishing is all-or-
+          # nothing: refuse to deploy unless every supported market is present
+          # across current + fallback artifacts, so a partial group run (or a
+          # failed fallback download) can never ship an incomplete static site.
+          expected = {code.upper() for code in market_registry.supported_market_codes()}
+          present = set()
+          for base in (
+              "/tmp/static-market-artifacts-current",
+              "/tmp/static-market-artifacts-fallback",
+          ):
+              for manifest in Path(base).rglob("manifest.market.json"):
+                  try:
+                      market = str(
+                          json.loads(manifest.read_text(encoding="utf-8")).get("market", "")
+                      ).upper()
+                  except (OSError, json.JSONDecodeError, TypeError) as exc:
+                      print(f"::warning::Could not read {manifest}: {exc}", flush=True)
+                      continue
+                  if market:
+                      present.add(market)
+
+          print(f"Expected markets: {', '.join(sorted(expected))}")
+          print(f"Present markets:  {', '.join(sorted(present)) or '(none)'}")
+
+          missing = sorted(expected - present)
+          if missing:
+              print(
+                  "::error::Refusing to publish an incomplete static site. No current "
+                  f"build and no fallback artifact for: {', '.join(missing)}.",
+                  flush=True,
+              )
+              sys.exit(1)
+          print("All supported markets present; static site is complete.")
+          PY
 
       - name: Combine static data bundle
         run: |
