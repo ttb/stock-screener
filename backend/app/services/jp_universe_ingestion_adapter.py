@@ -130,6 +130,12 @@ class JPUniverseIngestionAdapter:
                 f"Invalid JP symbol '{source_symbol}'. "
                 "Expected JP local code with optional .T/.JP suffix."
             )
+        numeric_part = token[:-1] if token[-1].isalpha() else token
+        if numeric_part.startswith("0"):
+            raise ValueError(
+                f"Invalid JP symbol '{source_symbol}'. "
+                "JP local codes must not be zero-prefixed."
+            )
         return token
 
     @staticmethod

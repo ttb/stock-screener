@@ -165,6 +165,29 @@ class BulkDataFetcher:
             if symbol in errors and errors[symbol]
         }
 
+    @staticmethod
+    def _is_zero_prefixed_jp_symbol(symbol: str) -> bool:
+        normalized = str(symbol or "").strip().upper()
+        if normalized.endswith(".T"):
+            local_code = normalized[:-2]
+        elif normalized.endswith(".JP"):
+            local_code = normalized[:-3]
+        else:
+            return False
+        if not local_code:
+            return False
+        numeric_part = local_code[:-1] if local_code[-1].isalpha() else local_code
+        return numeric_part.startswith("0") and numeric_part.isdigit()
+
+    @classmethod
+    def _empty_download_error_for_symbol(cls, symbol: str) -> str:
+        if cls._is_zero_prefixed_jp_symbol(symbol):
+            return (
+                "JP local code is zero-prefixed; no price data expected "
+                "from Yahoo"
+            )
+        return "yf.download returned empty"
+
     def _transient_failure_rate(self, results: Dict[str, Dict[str, Any]]) -> float:
         if not results:
             return 1.0
@@ -507,7 +530,10 @@ class BulkDataFetcher:
             if raw is None or raw.empty:
                 logger.warning("yf.download returned empty DataFrame")
                 for symbol in symbols:
-                    error = download_errors.get(symbol) or 'yf.download returned empty'
+                    error = (
+                        download_errors.get(symbol)
+                        or self._empty_download_error_for_symbol(symbol)
+                    )
                     results[symbol] = self._build_error_result(
                         symbol,
                         error,
