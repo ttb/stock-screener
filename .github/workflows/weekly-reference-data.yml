@@ -10,7 +10,7 @@ on:
         description: "Run only this market (or 'all' for the full matrix)."
         required: false
         type: choice
-        default: all
+        default: US
         options:
           - all
           - US
