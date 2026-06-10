@@ -15,7 +15,7 @@ on:
       market_group:
         description: 'Which market group to build'
         type: choice
-        default: all
+        default: us
         options:
           - all
           - asia
