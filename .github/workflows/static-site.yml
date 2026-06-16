@@ -9,7 +9,7 @@ on:
     # Asian group — 6:30pm SGT, after all Asian markets close (incl. India,
     # which closes 3:30pm IST = 6:00pm SGT; the 30-min buffer lets prices
     # settle). Singapore has no DST, so 6:30pm SGT == 10:30 UTC year-round.
-    - cron: '30 10 * * 1-5'
+    # - cron: '30 10 * * 1-5'
   workflow_dispatch:
     inputs:
       market_group:
@@ -17,8 +17,7 @@ on:
         type: choice
         default: us
         options:
-          - all
-          - asia
+         # - all
           - us
 
 concurrency:
@@ -50,19 +49,19 @@ jobs:
           MARKET_GROUP: ${{ github.event.inputs.market_group }}
         run: |
           # ASIA='["HK","IN","JP","KR","TW","CN","SG","MY","AU"]'
-          US='["US","CA","DE"]'
-          ALL='["US","HK","IN","JP","KR","TW","CN","CA","DE","SG","AU","MY"]'
+          US='["US"]'
+          # ALL='["US","HK","IN","JP","KR","TW","CN","CA","DE","SG","AU","MY"]'
 
           if [ "$EVENT_NAME" = "schedule" ]; then
             case "$SCHEDULE" in
-              '30 10 * * 1-5') # markets="$ASIA" ;;   # 10:30 UTC = 6:30pm SGT
+              #'30 10 * * 1-5') # markets="$ASIA" ;;   # 10:30 UTC = 6:30pm SGT
               *)               markets="$US" ;;     # 4:10pm ET (America/New_York)
             esac
           else
             case "$MARKET_GROUP" in
               # asia) markets="$ASIA" ;;
               us)   markets="$US" ;;
-              *)    markets="$ALL" ;;
+              # *)    markets="$ALL" ;;
             esac
           fi
 
