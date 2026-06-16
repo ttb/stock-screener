@@ -14,17 +14,17 @@ on:
         options:
           - all
           - US
-          - HK
-          - IN
-          - JP
-          - KR
-          - TW
-          - CN
-          - CA
-          - DE
-          - SG
-          - AU
-          - MY
+          #- HK
+          #- IN
+          #- JP
+          #- KR
+          #- TW
+          #- CN
+          #- CA
+          #- DE
+          #- SG
+          #- AU
+          #- MY
       max_runtime_minutes:
         description: >-
           Per-market deadline in minutes for the fundamentals refresh. Blank
